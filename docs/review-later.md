@@ -100,5 +100,5 @@ The key idea: all remote inputs should share the same boring contract:
 
 - Fold more patch-CDN orchestration behind client-shaped APIs so the CLI mostly
   wires options to library calls.
-- Start the `.datc64` table reader against the checked-in schema snapshot,
-  beginning with `WorldAreas` and `Topologies`.
+- Build the Acts 1-5 scrape command on top of the `.datc64` reader, beginning
+  with `WorldAreas` and `Topologies`.

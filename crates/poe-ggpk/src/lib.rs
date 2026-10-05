@@ -1,6 +1,7 @@
 pub mod bundle;
 pub mod cache;
 pub mod dat_schema;
+pub mod dat_table;
 pub mod ggpk;
 pub mod index_bundle;
 pub mod patchcdn;
@@ -16,6 +17,11 @@ pub use cache::{
 pub use dat_schema::{
     contains_graphql_type, validate_required_types, DatSchemaClient, DatSchemaError,
     DatSchemaSnapshotManifest, DEFAULT_DAT_SCHEMA_CACHE_KEY, DEFAULT_DAT_SCHEMA_URL,
+};
+pub use dat_table::{
+    headers_from_graphql_table, parse_datc64, parse_graphql_table, read_dat_table,
+    table_name_from_path, DatColumnHeader, DatFieldType, DatFile, DatRow, DatTableError,
+    DatTableRows, DatValue, GraphqlColumn, GraphqlTable,
 };
 pub use ggpk::{GgpkError, RecordHeader, RecordTag};
 pub use index_bundle::{

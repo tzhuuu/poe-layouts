@@ -65,6 +65,15 @@ cargo run -p poe-cli -- extract-file \
   --out .poe-layouts/raw/data/worldareas.datc64
 ```
 
+Inspect projected columns from an extracted `.datc64` table:
+
+```sh
+cargo run -p poe-cli -- inspect-dat-table \
+  --input .poe-layouts/raw/data/worldareas.datc64 \
+  --table WorldAreas \
+  --limit 5
+```
+
 Use an explicit patch version when you want a reproducible target:
 
 ```sh

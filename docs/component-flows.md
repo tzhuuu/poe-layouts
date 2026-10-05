@@ -94,6 +94,22 @@ extract-file --logical-path data/worldareas.datc64
 Logical paths from path reps are lowercase. Callers should prefer lowercase
 paths when listing or extracting files.
 
+## Dat Table Reader Flow
+
+```text
+inspect-dat-table
+  -> read schema/dat/_Core.gql
+  -> parse selected table definition
+  -> parse local .datc64 fixed/variable sections
+  -> project requested columns
+  -> print rows as JSON
+```
+
+The reader currently targets `.datc64`, which is enough for `WorldAreas` and
+`Topologies`. It supports scalar primitives, row keys, foreign row keys, strings,
+and arrays. The scraper should use this reader after extracting raw table files
+from the patch CDN.
+
 ## Offline Flow
 
 ```text
@@ -115,7 +131,8 @@ parsing when run in offline mode.
 scrape campaign-acts-1-5
   -> read schema/dat/_Core.gql
   -> extract data/worldareas.datc64
-  -> extract topology table/files
+  -> read WorldAreas columns
+  -> extract and read topology table/files
   -> select Acts 1-5 campaign zones
   -> resolve terrain graph dependencies
   -> extract .dgr, .tsi, .arm candidates

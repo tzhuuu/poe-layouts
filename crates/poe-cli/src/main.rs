@@ -5,8 +5,8 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use poe_ggpk::{
     default_cache_root, fetch_latest_patch_versions, parse_bundle_header, parse_index_bundle,
-    root_directories, unpack_path_reps, CacheMode, DatSchemaClient, DiskCache, PatchCdnSource,
-    PoeGame, DEFAULT_DAT_SCHEMA_URL,
+    read_dat_table, root_directories, table_name_from_path, unpack_path_reps, CacheMode,
+    DatSchemaClient, DiskCache, PatchCdnSource, PoeGame, DEFAULT_DAT_SCHEMA_URL,
 };
 
 const DEFAULT_DAT_SCHEMA_PATH: &str = "schema/dat/_Core.gql";
@@ -171,6 +171,24 @@ enum Command {
         #[arg(long, default_value = DEFAULT_DAT_SCHEMA_MANIFEST_PATH)]
         manifest: PathBuf,
     },
+    /// Read projected columns from a local `.datc64` table file.
+    InspectDatTable {
+        /// Input `.datc64` file.
+        #[arg(long)]
+        input: PathBuf,
+        /// GraphQL dat schema snapshot.
+        #[arg(long, default_value = DEFAULT_DAT_SCHEMA_PATH)]
+        schema: PathBuf,
+        /// Table name. Defaults to the input file stem.
+        #[arg(long)]
+        table: Option<String>,
+        /// Column to read. Repeat this flag to project multiple columns.
+        #[arg(long = "column")]
+        columns: Vec<String>,
+        /// Maximum number of rows to print.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -265,6 +283,13 @@ fn main() -> anyhow::Result<()> {
             out,
             manifest,
         } => update_dat_schema(&url, cache_root, offline, &out, &manifest),
+        Command::InspectDatTable {
+            input,
+            schema,
+            table,
+            columns,
+            limit,
+        } => inspect_dat_table(&input, &schema, table, columns, limit),
     }
 }
 
@@ -703,6 +728,49 @@ fn update_dat_schema(
         .context("update dat schema snapshot")?;
     println!("{}", serde_json::to_string_pretty(&manifest)?);
     Ok(())
+}
+
+fn inspect_dat_table(
+    input: &Path,
+    schema: &Path,
+    table: Option<String>,
+    columns: Vec<String>,
+    limit: usize,
+) -> anyhow::Result<()> {
+    let table_name = table
+        .or_else(|| table_name_from_path(input))
+        .with_context(|| format!("derive table name from {}", input.display()))?;
+    let bytes = std::fs::read(input).with_context(|| format!("read {}", input.display()))?;
+    let schema =
+        std::fs::read_to_string(schema).with_context(|| format!("read {}", schema.display()))?;
+    let columns = if columns.is_empty() {
+        default_columns_for_table(&table_name)
+    } else {
+        columns
+    };
+    let rows = read_dat_table(&bytes, &schema, &table_name, &columns, Some(limit))
+        .with_context(|| format!("read dat table {table_name}"))?;
+    println!("{}", serde_json::to_string_pretty(&rows)?);
+    Ok(())
+}
+
+fn default_columns_for_table(table_name: &str) -> Vec<String> {
+    match table_name {
+        "WorldAreas" => [
+            "Id",
+            "Name",
+            "Act",
+            "IsTown",
+            "AreaLevel",
+            "TopologiesKeys",
+            "TSIFile",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        "Topologies" => ["Id", "DGRFile"].into_iter().map(str::to_owned).collect(),
+        _ => ["Id"].into_iter().map(str::to_owned).collect(),
+    }
 }
 
 fn cache_mode(offline: bool) -> CacheMode {
