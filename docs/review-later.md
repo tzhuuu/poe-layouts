@@ -15,28 +15,28 @@ each CLI command perform ad hoc network work.
 
 ## Files To Review
 
-- `crates/poe-ggpk/src/cache.rs`
+- `crates/poe-content/src/cache.rs`
   - Owns `DiskCache`, cache modes, metadata sidecars, manifests, verification,
     and cache clearing.
   - This is the reusable foundation.
-- `crates/poe-ggpk/src/patchcdn.rs`
+- `crates/poe-content/src/patchcdn.rs`
   - Owns latest-version lookup, `PatchCdnSource`, CDN URL construction, and
     bundle fetching.
   - This is close to a game-content client, but it is currently specific to the
     patch CDN.
-- `crates/poe-ggpk/src/dat_schema.rs`
+- `crates/poe-content/src/dat_schema.rs`
   - Owns `DatSchemaClient`, schema snapshot validation, and schema manifest
     writing.
   - This is the first milestone-2 fetch client extraction.
-- `crates/poe-cli/src/main.rs`
+- `crates/pather-cli/src/main.rs`
   - `update-dat-schema` now delegates GraphQL schema fetching and validation to
-    `poe-ggpk`.
+    `poe-content`.
   - Continue moving remote-input logic out of the CLI as the scraper grows.
-- `schema/dat/_Core.gql`
+- `data/cache/dat-schema/_Core.gql`
   - Checked-in schema snapshot from `poe-tool-dev/dat-schema`.
   - Confirm the `WorldAreas` and `Topologies` fields look like the tables we
     want to parse first.
-- `schema/dat/schema-manifest.json`
+- `data/cache/dat-schema/schema-manifest.json`
   - Current schema snapshot metadata: source URL, byte length, BLAKE3, and
     required table names.
 - `docs/component-flows.md`
@@ -44,7 +44,7 @@ each CLI command perform ad hoc network work.
 
 ## Proposed Shape
 
-Add a generic source/client layer, probably in `poe-ggpk` at first unless it
+Add a generic source/client layer, probably in `poe-content` at first unless it
 grows enough to deserve a separate crate.
 
 Possible API shape:
@@ -88,8 +88,8 @@ The key idea: all remote inputs should share the same boring contract:
 - Should latest-version JSON be cached too, or should only large/static inputs
   use the disk cache?
 - Should the GraphQL schema snapshot live in `.poe-layouts/cache` first and then
-  be copied to `schema/dat/_Core.gql` only when intentionally refreshing the
-  checked-in snapshot?
+  be copied to `data/cache/dat-schema/_Core.gql` only when intentionally refreshing the
+  local snapshot?
 - Should schema validation be generic, for example requiring a list of table
   types, so future monster-data work can ask for `MonsterVarieties`, `Mods`,
   `Tags`, etc. without adding new CLI logic?

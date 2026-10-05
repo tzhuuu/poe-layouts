@@ -21,7 +21,7 @@ improves.
   generation.
 - Use a single canonical schema shared by Rust and TypeScript.
 - Use FlatBuffers as the primary app data artifact.
-- Keep the Tauri app local-first with no required network calls.
+- Keep the web app local-first with no required network calls.
 - Do not add a hosted backend. Explicit Rust update commands may fetch patch
   and schema data; normal visualization reads local artifacts.
 - Use Pixi.js for 2D layout visualization.
@@ -45,8 +45,8 @@ below describe the intended libraries and why they belong in the design.
 | Errors | `anyhow` | Top-level CLI error plumbing only. | Avoid leaking `anyhow::Error` from reusable crates. |
 | Logging | `tracing`, `tracing-subscriber` | Structured logs for extraction, parsing, validation, and app artifact generation. | Use spans for zone/topology/graph processing. |
 | Serialization | `serde`, `serde_json` | Debug reports and fixture manifests. | FlatBuffers is canonical; JSON is for inspection only. |
-| FlatBuffers | `flatbuffers` | Rust runtime for writing and optionally reading `layouts.bin`. | Generated Rust bindings live in `poe-schema`. |
-| FlatBuffers generation | `flatc` binary invoked from `crates/poe-schema/build.rs` | Generate Rust and TypeScript bindings from `schema/poe_layouts.fbs`. | `build.rs` is the canonical generation path. Prefer checking generated TypeScript into `app/src/generated` only if build ergonomics require it. |
+| FlatBuffers | `flatbuffers` | Rust runtime for writing and optionally reading `layouts.bin`. | Generated Rust bindings live in `pather-schema`. |
+| FlatBuffers generation | `flatc` binary invoked from `crates/pather-schema/build.rs` | Generate Rust and TypeScript bindings from `schema/poe_layouts.fbs`. | `build.rs` is the canonical generation path. Prefer checking generated TypeScript into `app/src/generated` only if build ergonomics require it. |
 | Hashing | `blake3`, only if/where needed | Simple stable content hashes for manifests, cache checks, and final artifact identity. | Do not build an elaborate hash abstraction. Path + size + one stable content hash is enough when a hash is useful. |
 | Binary parsing | `byteorder` | Little-endian integer reads for GGPK records and binary table/index data. | Keep GGPK parsing explicit rather than macro-heavy. |
 | Parsing helpers | `winnow` | Text-ish parser combinators for `.dgr`, `.tsi`, `.arm`, `.et` when line splitting gets brittle. | Use only where it improves clarity; simple line scanners are fine. |
@@ -66,11 +66,11 @@ below describe the intended libraries and why they belong in the design.
 | A hosted web service or server backend | The app should load a local generated artifact directly. Rust commands generate data; frontend renders it. Vite is only for frontend development/builds. |
 | Three.js | The visualizer is a 2D topology explorer. Pixi is enough for the first complete rewrite. |
 
-### TypeScript/Tauri Libraries
+### TypeScript/Web Libraries
 
 | Area | Library | Intended Use | Notes |
 | --- | --- | --- | --- |
-| App shell | Tauri 2 | Native desktop shell and local file permissions without hosting a service. | Keep Rust backend minimal at runtime; pipeline runs as CLI/library commands. |
+| App shell | Local web server 2 | Native desktop shell and local file permissions without hosting a service. | Keep Rust backend minimal at runtime; pipeline runs as CLI/library commands. |
 | Build | Vite | Fast frontend dev server and production build. | Already in the prototype. |
 | Language | TypeScript | UI/query/render code. | Strict types around generated FlatBuffers accessors and UI view models. |
 | Rendering | Pixi.js 8 | 2D graph rendering, hit testing, pan/zoom transforms, hover states. | Keep all graph rendering in one renderer module. |
@@ -82,7 +82,7 @@ below describe the intended libraries and why they belong in the design.
 ### Generated Code Policy
 
 - `schema/poe_layouts.fbs` is the canonical schema.
-- Rust generated code is produced by `crates/poe-schema/build.rs`.
+- Rust generated code is produced by `crates/pather-schema/build.rs`.
 - TypeScript generated code is also produced through the `build.rs` generation
   path and written under `app/src/generated`.
 - Generated files may be committed if that makes local setup easier, but the
@@ -91,7 +91,7 @@ below describe the intended libraries and why they belong in the design.
   folders:
 
 ```text
-crates/poe-schema/src/lib.rs
+crates/pather-schema/src/lib.rs
 app/src/data/layoutDatabase.ts
 ```
 
@@ -119,12 +119,12 @@ npm ls --depth=0
 
 - For generated code, audit the generator and the generated output separately:
   - `flatc` version used
-  - `crates/poe-schema/build.rs`
+  - `crates/pather-schema/build.rs`
   - generated Rust bindings location
   - generated TypeScript bindings location
   - runtime package versions
 - Do not add hosted service dependencies to the app. The app may expose local
-  Tauri commands for cache refresh and artifact generation, then open a local
+  HTTP endpoints for cache refresh and artifact generation, then open a local
   artifact and render it.
 
 ## High-Level Pipeline
@@ -136,7 +136,7 @@ PoE install / Content.ggpk
   -> low-level file parsers
   -> semantic layout model builder
   -> FlatBuffers artifact
-  -> Tauri + React + Pixi visualizer
+  -> pather-layouts-server + React + Pixi visualizer
 ```
 
 The current pipeline already writes a first scrape-level binary artifact:
@@ -167,19 +167,19 @@ schema/
   poe_layouts.fbs
 
 crates/
-  poe-schema/
+  pather-schema/
     build.rs FlatBuffers generation for Rust
     generated Rust bindings
 
-  poe-ggpk/
+  poe-content/
     GGPK and bundle/index reading
     file listing and logical-path lookup
     raw file extraction
 
-  poe-layouts-core/
+  pather-core/
     campaign Acts 1-5 scrape APIs
     layout artifact construction
-    local operations shared by CLI and Tauri
+    local operations shared by CLI and Local web server
 
   poe-formats/
     low-level parsers for PoE formats
@@ -193,7 +193,7 @@ crates/
     extract -> parse -> validate -> write FlatBuffers
     report generation
 
-  poe-cli/
+  pather-cli/
     user-facing commands for discovery, extraction, builds, validation
 
 app/
@@ -215,7 +215,7 @@ into this shape or replaced in place during the rewrite.
 This section defines crate boundaries tightly enough to audit before
 implementation.
 
-### `poe-schema`
+### `pather-schema`
 
 Purpose: own generated FlatBuffers bindings and safe handwritten helpers around
 the generated API.
@@ -249,7 +249,7 @@ Implementation notes:
   FlatBuffers contract.
 - Schema version should be stored in the artifact and checked by the app.
 
-### `poe-ggpk`
+### `poe-content`
 
 Purpose: read local PoE archive data and expose logical files.
 
@@ -305,7 +305,7 @@ a raw cache.
 
 Dependencies:
 
-- `poe-ggpk`
+- `poe-content`
 - `poe-formats` for shallow dependency discovery
 - `globset`
 - `walkdir`
@@ -469,11 +469,11 @@ and artifact writing.
 
 Dependencies:
 
-- `poe-ggpk`
+- `poe-content`
 - `poe-extract`
 - `poe-formats`
 - `poe-model`
-- `poe-schema`
+- `pather-schema`
 - `flatbuffers`
 - `blake3` if artifact/raw hashes are emitted
 - `serde_json`
@@ -518,7 +518,7 @@ Implementation notes:
 - Reports should be generated from the same model/artifact, not a parallel path.
 - Pipeline must be deterministic for the same input files.
 
-### `poe-cli`
+### `pather-cli`
 
 Purpose: user-facing binary only.
 
@@ -540,15 +540,14 @@ Responsibilities:
 Implementation notes:
 
 - Keep command handlers thin.
-- Prefer typed options passed into `poe-pipeline`, `poe-extract`, or `poe-ggpk`.
+- Prefer typed options passed into `poe-pipeline`, `poe-extract`, or `poe-content`.
 
-### Tauri App
+### Web App
 
 Purpose: inspect the generated layout artifact.
 
 Dependencies:
 
-- `@tauri-apps/api`
 - `react`
 - `react-dom`
 - `pixi.js`
@@ -809,7 +808,7 @@ Compatibility rules:
 ## Canonical Schema
 
 FlatBuffers should be the shared contract between Rust and TypeScript. The Rust
-pipeline writes the artifact; the Tauri frontend reads it directly.
+pipeline writes the artifact; the browser frontend reads it directly.
 
 Initial schema file:
 
@@ -961,7 +960,7 @@ concepts go into the FlatBuffers schema.
 
 ## GGPK Reader
 
-The `poe-ggpk` crate should own local game archive access.
+The `poe-content` crate should own local game archive access.
 
 Responsibilities:
 
@@ -1083,9 +1082,9 @@ Optional SQLite can still be useful later for ad hoc analysis, but it should not
 be the canonical app contract. If we add it, treat it as a development index
 built from the same model, not a competing source of truth.
 
-## Tauri/React/Pixi App
+## Web/React/Pixi App
 
-The Tauri app should load generated FlatBuffers data locally. React should own
+The web app should load generated FlatBuffers data locally. React should own
 the app shell and stateful panels; Pixi.js should own the interactive graph
 canvas.
 
@@ -1161,7 +1160,7 @@ are still useful for debugging each stage.
 
 - Review `schema/poe_layouts.fbs` draft.
 - Review the Rust and TypeScript library set.
-- Confirm `crates/poe-schema/build.rs` is the canonical `flatc` invocation path.
+- Confirm `crates/pather-schema/build.rs` is the canonical `flatc` invocation path.
 - Decide how the `flatc` binary itself is installed or discovered:
   - checked system dependency,
   - package-manager-installed tool,
@@ -1180,8 +1179,8 @@ Done when:
 ### Step 1: Establish the New Skeleton
 
 - Add `schema/poe_layouts.fbs`.
-- Add FlatBuffers compiler setup through `crates/poe-schema/build.rs`.
-- Add Rust schema generation in a new `poe-schema` crate.
+- Add FlatBuffers compiler setup through `crates/pather-schema/build.rs`.
+- Add Rust schema generation in a new `pather-schema` crate.
 - Add TypeScript schema generation under `app/src/generated`.
 - Add a tiny hand-built `layouts.bin` fixture.
 - Make the app load the FlatBuffers fixture.
@@ -1292,7 +1291,7 @@ extract/scrape
   -> parse
   -> build FlatBuffers
   -> validate counts/issues
-  -> render in Tauri/React/Pixi
+  -> render in Web/React/Pixi
   -> visually inspect screenshot
   -> fix parser/model/UI
   -> repeat

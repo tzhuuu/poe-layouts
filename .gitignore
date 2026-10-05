@@ -12,6 +12,7 @@
 
 # Local pipeline outputs and game data.
 /.poe-layouts/
+/app/.poe-layouts/
 /data/raw/
 /data/cache/
 /data/*.sqlite

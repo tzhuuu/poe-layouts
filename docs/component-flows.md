@@ -6,58 +6,78 @@ details in code; keep cross-component flow shape here.
 ## Current Components
 
 ```text
-poe-cli
-  -> poe-ggpk
+pather-cli
+  -> local CLI runtime glue
+     -> cache path policy
+     -> temporary Node.js Oodle bridge
+  -> poe-content
      -> patch CDN source
      -> disk cache
      -> bundle/index parsers
+     -> logical file extraction
+  -> poe-dat
      -> datc64 binary reader
      -> GraphQL dat schema interpreter
      -> typed dat table projection
-  -> poe-layouts-core
+  -> pather-core
      -> campaign Acts 1-5 scrape API
      -> local raw/model artifacts
-  -> Tauri app
+  -> pather-layouts-server
+     -> local HTTP API
+     -> layout endpoint orchestration
+     -> static app/dist serving
+  -> browser app
      -> React app shell
      -> Pixi layout renderer
-     -> poe-layouts-core
   -> scripts/ooz-decompress-bundle.mjs
      -> ooz-wasm
 ```
 
-- `poe-cli` is the debugging and pipeline entrypoint. It owns CLI flags and the
-  temporary Node.js Oodle bridge invocation.
-- `poe-ggpk` owns stable Rust APIs for patch versions, cache layout, bundle
-  header parsing, index parsing, path hashing, path reps unpacking, and cache
-  verification. It also owns generic PoE file readers, plus source-specific
-  fetch clients such as `DatSchemaClient`.
-- `poe-layouts-core` owns milestone-2 layout-domain APIs. It consumes
+- `pather-cli` is the debugging and pipeline entrypoint. It owns CLI flags and
+  low-level inspection command presentation.
+- `pather-layouts-server` owns the local HTTP surface. It serves the built browser app,
+  `layouts.bin`, layout JSON endpoints, and already-extracted raw corpus files
+  backed by lower-level Rust crates.
+- `poe-content` owns stable Rust APIs for patch versions, cache primitives,
+  bundle header parsing, index parsing, path hashing, path reps unpacking,
+  logical file extraction, and cache verification. It does not decide where an
+  application workspace stores its cache.
+- `poe-dat` owns generic PoE table readers: `.datc64` decoding, GraphQL DAT
+  schema interpretation, typed table projection, and schema snapshot fetching
+  through a caller-supplied cache.
+- `pather-core` owns milestone-2 layout-domain APIs. It consumes
   `PatchClient`, `GraphqlDatSchema`, typed dat table projections, and a
   caller-provided `BundleDecompressor` to produce raw campaign scrape manifests
   and app-facing FlatBuffers artifacts.
 - `scripts/ooz-decompress-bundle.mjs` is the temporary Oodle bridge. It should
   stay thin: read bundle bytes, decode chunks with `ooz-wasm`, write bytes.
-- The visualizer remains a local Tauri app. Vite is a frontend development and
-  build tool only; there is no hosted backend service in the product shape.
-- Tauri commands should expose layout-domain operations to React/Pixi, not raw
-  CDN, bundle, `.datc64`, or GraphQL schema mechanics.
-- The Tauri app may expose local pipeline controls for manual iteration, but
-  those controls should call the same Rust cache and patch CDN APIs as the CLI
-  rather than duplicating fetch or clear behavior in TypeScript.
+- The visualizer remains local-first. Vite is a frontend development and build
+  tool only; the production app is served by `pather-layouts-server` on localhost.
+- Web API handlers may expose local layout artifacts and extracted raw corpus
+  files. They should not expose raw CDN, bundle, `.datc64`, or GraphQL schema
+  mechanics directly.
+- The browser app should stay focused on browsing and rendering layout artifacts.
+  Pipeline, cache, DAT schema, and raw GGPK exploration commands live in
+  `pather-cli` until we need a productized local control surface.
 
-## `poe-ggpk` Source Layout
+## `poe-content` Source Layout
 
 ```text
 bundle.rs             bundle header/decompression primitives
 cache.rs              shared disk cache, manifests, verification, clearing
-dat_schema_client.rs  fetch/update checked-in GraphQL dat schema snapshots
-dat_table.rs          typed table row projection over GraphQL dat rows
-datc64.rs             generic .datc64 binary reader
-dat_graphql.rs        GraphQL schema interpreter for named dat tables/columns
 ggpk.rs               low-level GGPK record scanning primitives
 index_bundle.rs       Bundles2 index parsing, path reps, path hashing
 patchcdn.rs           version resolution and patch CDN fetch orchestration
 patch_client.rs       high-level patch index loading and logical file extraction
+```
+
+## `poe-dat` Source Layout
+
+```text
+dat_schema_client.rs  fetch/update local GraphQL DAT schema snapshots
+dat_table.rs          typed table row projection over GraphQL dat rows
+datc64.rs             generic .datc64 binary reader
+dat_graphql.rs        GraphQL schema interpreter for named dat tables/columns
 ```
 
 The dependency direction should stay one-way: `dat_graphql` may depend on
@@ -73,11 +93,22 @@ paths, and extracting logical files. The caller supplies a `BundleDecompressor`
 implementation; today the CLI implementation shells out to the temporary
 Node.js `ooz-wasm` bridge.
 
-`poe-schema` owns the app-facing FlatBuffers schema and small Rust writer/reader
+`pather-schema` owns the app-facing FlatBuffers schema and small Rust writer/reader
 helpers. Scrape/build code should pass typed model structs into this crate
 instead of constructing FlatBuffers directly in CLI code.
 
-## `poe-layouts-core` Source Layout
+## `pather-layouts-server` Source Layout
+
+```text
+main.rs  local HTTP API, layout endpoints, static serving, server runtime glue
+```
+
+Server code should stay practical and local-environment-shaped. It may know
+about the repo workspace, `.poe-layouts`, default schema/output paths, and
+process execution. It should call into `pather-core`, `poe-content`, and
+`poe-dat` rather than reimplementing their parsing or domain rules.
+
+## `pather-core` Source Layout
 
 ```text
 lib.rs  Acts 1-5 scrape API, manifest/model conversion, layout DB inspection
@@ -90,31 +121,31 @@ around stable domain seams:
 campaign.rs       Acts 1-5 scope selection and scrape orchestration
 layout_db.rs      manifest -> FlatBuffers model conversion
 terrain.rs        graph/TSI/DGR/ARM dependency parsing
-tauri_api.rs      optional DTO helpers for local app commands
+web_api.rs        optional DTO helpers for local web commands
 ```
 
-The important boundary is that CLI and Tauri should call this crate rather than
+The important boundary is that CLI and web handlers should call this crate rather than
 duplicating campaign scrape behavior.
 
-## App Pipeline Control Flow
+## Browser App Data Flow
 
 ```text
-React Scrape tab
-  -> Tauri command
-  -> poe-ggpk cache / patch CDN API
-  -> poe-layouts-core scrape API
-  -> .poe-layouts/cache
-  -> .poe-layouts/raw/campaign-acts-1-5
-  -> app/public/data/layouts.bin
-  -> command result rendered inline
+browser app
+  -> pather-layouts-server
+  -> /data/layouts.bin
+  -> generated FlatBuffers TypeScript reader
+  -> React/Pixi layout explorer
+
+browser or AI helper
+  -> /api/raw-files?prefix=metadata/terrain/act1/area1
+  -> /raw-files/metadata/terrain/act1/area1/example.dgr
+  -> extracted bytes from .poe-layouts/raw/campaign-acts-1-5/files
 ```
 
-The app's Scrape tab supports manual latest-version lookup, named bundle
-prefetch, cache clear preview/removal, and local Acts 1-5 scrape runs. This is
-deliberately the same layer as the CLI `prefetch-bundles`, `clear-cache`, and
-`scrape-campaign-acts-1-5` commands, so manual UI-driven work and scripted
-pipeline work share cache keys, release-line semantics, manifests, and app
-artifacts.
+The app reads the compiled FlatBuffers artifact directly. Local scrape, cache,
+and live CDN operations are intentionally kept in `pather-cli` while the data
+model is still moving. The server may browse and serve files that the pipeline
+has already extracted into the local raw corpus.
 
 The Acts 1-5 scrape treats table-declared `WorldAreas.TSIFile` and
 `Topologies.DGRFile` values as first-order terrain candidates only when the
@@ -139,7 +170,7 @@ Delivered outcomes:
 - Logical file extraction by path, including `data/worldareas.datc64` and
   `data/topologies.datc64`.
 - GraphQL dat schema fetching from `poe-tool-dev/dat-schema`, validation, and a
-  checked-in schema snapshot.
+  local DAT schema snapshot.
 - Two-layer table reading:
   - `datc64` is the generic PoE file reader for `.datc64` envelopes, primitive
     field layouts, UTF-16 strings, row keys, arrays, and projected rows.
@@ -163,15 +194,15 @@ update-dat-schema
   -> shared disk cache
   -> poe-tool-dev/dat-schema _Core.gql
   -> validate required table types exist
-  -> schema/dat/_Core.gql
-  -> schema/dat/schema-manifest.json
+  -> data/cache/dat-schema/_Core.gql
+  -> data/cache/dat-schema/schema-manifest.json
 ```
 
 The GraphQL schema snapshot is the contract for interpreting extracted table
 files. The current scraper milestone requires at least `WorldAreas` and
-`Topologies`; future table parsing should use the checked-in snapshot by
+`Topologies`; future table parsing should use the local snapshot by
 default and refresh it explicitly when we need upstream schema changes. Schema
-refreshes force a network fetch by default; `--offline` rebuilds the checked-in
+refreshes force a network fetch by default; `--offline` rebuilds the local
 snapshot from cached bytes.
 
 ## Version And Cache Flow
@@ -202,9 +233,9 @@ exact patch path keeps bytes reproducible.
 inspect-index
   -> fetch/cache Bundles2/_.index.bin
   -> ooz bridge decompresses _.index.bin
-  -> poe-ggpk parses index sections
+  -> poe-content parses index sections
   -> ooz bridge decompresses nested path reps bundle
-  -> poe-ggpk unpacks logical paths
+  -> poe-content unpacks logical paths
   -> CLI prints summary, root dirs, prefix samples, optional lookup
 ```
 
@@ -227,11 +258,77 @@ extract-file --logical-path data/worldareas.datc64
 Logical paths from path reps are lowercase. Callers should prefer lowercase
 paths when listing or extracting files.
 
+## Logical Folder Browsing Flow
+
+```text
+browse-files --prefix Metadata/Terrain/Act1/Area1
+  -> PatchClient loads index and logical paths
+  -> match descendants under the folder prefix
+  -> print immediate child folders plus matching files
+
+browse-files --prefix Metadata/Terrain/Act1/Area1 --recursive --extension dgr
+  -> print every matching .dgr descendant, capped by --limit
+```
+
+`browse-files` is the CLI affordance for walking the GGPK logical namespace. It
+uses path reps from `_.index.bin`; it does not extract file bytes. Prefix
+matching is case-insensitive so callers can use either the original GGPK casing
+or lowercased paths.
+
+## Logical Folder Extraction Flow
+
+```text
+extract-folder --prefix Metadata/Terrain/Act1/Area1
+  -> PatchClient loads index and logical paths
+  -> match every descendant under the folder prefix
+  -> resolve each logical file to bundle, offset, and size
+  -> fetch/cache containing bundles
+  -> group requested slices by containing bundle
+  -> ooz bridge decompresses each bundle batch and writes all requested slices
+  -> write files under .poe-layouts/raw/files preserving logical paths
+  -> write .poe-layouts/raw/extract-folder-manifest.json
+```
+
+This command is the general raw-corpus escape hatch for AI-assisted reverse
+engineering: extract a whole content folder, keep the logical hierarchy, and use
+the manifest as the durable inventory tying local files back to CDN bundles.
+
+The Acts 1-5 scrape now performs the same kind of folder extraction for each
+table-declared terrain candidate's broader terrain area folder. For example, a
+`Topologies.DGRFile` anywhere under `metadata/terrain/act1/area1/...` causes
+the scrape to extract every indexed file under
+`metadata/terrain/act1/area1` into
+`.poe-layouts/raw/campaign-acts-1-5/files/metadata/terrain/act1/area1`.
+The scrape can also include explicit raw folder roots via CLI flags when we
+want to inspect a folder that no selected table-declared file points into.
+
+## Raw Corpus HTTP Flow
+
+```text
+GET /api/raw-files?prefix=metadata/terrain/act1/area1
+  -> list immediate child folders and files from the extracted raw corpus
+
+GET /api/raw-files?prefix=metadata/terrain/act1/area1&recursive=true&extension=dgr
+  -> list matching extracted descendants
+
+GET /raw-files/metadata/terrain/act1/area1/example.dgr
+  -> stream the extracted file bytes
+```
+
+This surface is intentionally filesystem-backed. It does not fetch from the
+patch CDN or extract missing files on demand; rerun the scrape or use
+`extract-folder` when the local raw corpus needs more bytes.
+
+Cold scrape performance depends mostly on Oodle decoding. `PatchClient` batches
+folder-corpus extraction by containing bundle so the temporary Node bridge reads
+and decodes each bundle once per batch instead of once per logical file. Reruns
+also skip files whose existing output size already matches the index entry.
+
 ## Dat Table Reader Flow
 
 ```text
 inspect-dat-table
-  -> read schema/dat/_Core.gql
+  -> read data/cache/dat-schema/_Core.gql
   -> GraphqlDatSchema parses schema tables once
   -> dat_graphql maps GraphQL columns to generic datc64 columns
   -> parse local .datc64 fixed/variable sections
@@ -245,7 +342,7 @@ The reader currently targets `.datc64`, which is enough for `WorldAreas` and
 `Topologies`. Generic binary reading is isolated in `datc64`; GraphQL schema
 interpretation is isolated in `dat_graphql`. The library boundary for
 table-aware scrape/build code is `GraphqlDatSchema`: construct it once from the
-checked-in GraphQL schema, then reuse it across raw table files after extracting
+local GraphQL schema, then reuse it across raw table files after extracting
 them from the patch CDN.
 
 Typed domain reads use the same lower layers:
@@ -258,9 +355,9 @@ read_typed_graphql_table::<WorldAreaRow>
   -> WorldAreaRow::from_dat_row maps raw cells into layout-domain fields
 ```
 
-The generic API lives in `poe-ggpk` so later scrapers can define their own typed
+The generic API lives in `poe-dat` so later scrapers can define their own typed
 rows without duplicating value lookup, row index handling, or type mismatch
-errors. `poe-layouts-core` currently defines `WorldAreaRow` and `TopologyRow`
+errors. `pather-core` currently defines `WorldAreaRow` and `TopologyRow`
 as private adapters because those table meanings belong to the Acts 1-5 scrape
 flow, not the generic file reader.
 
@@ -289,8 +386,9 @@ scrape campaign-acts-1-5
   -> GraphqlDatSchema reads WorldAreas and Topologies
   -> select main Acts 1-5 campaign zones by WorldAreas id prefix and act
   -> resolve table-declared topology graph and TSI candidates
-  -> record simple .dgr/.arm path variants
+  -> exclude league-specific terrain under metadata/terrain/leagues
   -> extract candidates that are present and available in cache/network mode
+  -> extract each candidate's parent terrain folder into the raw corpus
   -> write raw cache and manifest with missing paths/warnings
   -> convert scrape summary into poe_layouts.fbs model structs
   -> write app/public/data/layouts.bin
@@ -302,25 +400,23 @@ that later parser/model milestones can enrich.
 
 Current first pass: `scrape-campaign-acts-1-5` writes
 `.poe-layouts/raw/campaign-acts-1-5/manifest.json` and
-`app/public/data/layouts.bin`. In offline mode with only the current table
-bundles cached, it selects 81 main campaign areas and records terrain candidates
-as missing cache entries rather than failing the scrape.
+`app/public/data/layouts.bin`. It selects main campaign areas from `WorldAreas`
+and records table-declared terrain candidates from `WorldAreas.TSIFile` and
+`Topologies.DGRFile`, marking missing files rather than failing the scrape. It
+also extracts the parent terrain folders for those candidates and records the
+resulting files separately as `folder_files` in the manifest.
 
 `inspect-layout-db` reads the FlatBuffers artifact back and prints counts plus a
 small zone sample. Use it as the quick self-validation step after scraping.
 
-The Tauri shell currently exposes a local `inspect_layout_db` command that calls
-`poe-layouts-core`. A future scrape command should call the same core scraper
-once the desktop packaging story for the temporary Oodle decoder is settled.
-
-The Tauri app should eventually refresh or load this corpus through local Rust
-commands. The app UI should not require a hosted server; the only network path
-belongs to explicit update/fetch commands in the Rust data layer.
+The browser app consumes the generated artifact through `pather-layouts-server`;
+raw scrape/build iteration remains a CLI concern for now, while browsing the
+already-extracted raw corpus is available through local HTTP.
 
 ## Refactor Notes
 
-The next useful cleanup is to move the milestone-2 domain logic out of
-`poe-cli` and behind a typed layout-data API. The shape should be:
+The next useful cleanup is to split `pather-core/src/lib.rs` into domain modules
+once terrain dependency parsing grows. The shape should remain:
 
 ```text
 PatchClient
