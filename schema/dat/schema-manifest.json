@@ -1,0 +1,11 @@
+{
+  "blake3": "5ef78114346c81f7eee12c44185ab875be67fee6d2c54d0882862395fa747b34",
+  "byte_len": 131445,
+  "required_types": [
+    "WorldAreas",
+    "Topologies"
+  ],
+  "schema_path": "schema/dat/_Core.gql",
+  "schema_version": 1,
+  "source_url": "https://raw.githubusercontent.com/poe-tool-dev/dat-schema/main/dat-schema/_Core.gql"
+}

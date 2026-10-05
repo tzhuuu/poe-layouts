@@ -22,6 +22,21 @@ poe-cli
 - `scripts/ooz-decompress-bundle.mjs` is the temporary Oodle bridge. It should
   stay thin: read bundle bytes, decode chunks with `ooz-wasm`, write bytes.
 
+## Table Schema Flow
+
+```text
+update-dat-schema
+  -> poe-tool-dev/dat-schema _Core.gql
+  -> validate required table types exist
+  -> schema/dat/_Core.gql
+  -> schema/dat/schema-manifest.json
+```
+
+The GraphQL schema snapshot is the contract for interpreting extracted table
+files. The current scraper milestone requires at least `WorldAreas` and
+`Topologies`; future table parsing should use the checked-in snapshot by
+default and refresh it explicitly when we need upstream schema changes.
+
 ## Version And Cache Flow
 
 ```text
@@ -93,6 +108,7 @@ parsing when run in offline mode.
 
 ```text
 scrape campaign-acts-1-5
+  -> read schema/dat/_Core.gql
   -> extract data/worldareas.datc64
   -> extract topology table/files
   -> select Acts 1-5 campaign zones

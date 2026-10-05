@@ -99,6 +99,16 @@ Clear only one exact patch under that release line:
 cargo run -p poe-cli -- clear-cache --patch-version <patch-version>
 ```
 
+Refresh the checked-in table schema snapshot from `poe-tool-dev/dat-schema`:
+
+```sh
+cargo run -p poe-cli -- update-dat-schema
+```
+
+That command validates that the fetched GraphQL schema includes the immediate
+scrape targets, currently `WorldAreas` and `Topologies`, then writes
+`schema/dat/_Core.gql` and `schema/dat/schema-manifest.json`.
+
 The extractor will eventually generate the full bundle list for Acts 1-5 after
 reading `_.index.bin`. The cache layer is already shaped so that parse/build
 steps can require all inputs to exist locally before they start.
