@@ -1,0 +1,15 @@
+namespace PoeLayouts;
+
+table LayoutDatabase {
+  schema_version: string;
+  scope: string;
+  zones: [Zone];
+}
+
+table Zone {
+  id: string;
+  name: string;
+  act: int;
+}
+
+root_type LayoutDatabase;

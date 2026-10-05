@@ -8,6 +8,7 @@
 /app/node_modules/
 /app/dist/
 /app/.vite/
+/app/src-tauri/gen/
 
 # Local pipeline outputs and game data.
 /.poe-layouts/

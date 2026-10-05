@@ -1,0 +1,14 @@
+[package]
+name = "poe-layouts-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.4.1", features = [] }
+
+[dependencies]
+tauri = { version = "2.8.5", features = [] }
+
+[lints]
+workspace = true
