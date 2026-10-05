@@ -99,16 +99,18 @@ paths when listing or extracting files.
 ```text
 inspect-dat-table
   -> read schema/dat/_Core.gql
-  -> parse selected table definition
+  -> DatTableReader parses schema tables once
   -> parse local .datc64 fixed/variable sections
-  -> project requested columns
+  -> generate stable names for anonymous schema fields
+  -> project requested columns or all effective columns
   -> print rows as JSON
 ```
 
 The reader currently targets `.datc64`, which is enough for `WorldAreas` and
 `Topologies`. It supports scalar primitives, row keys, foreign row keys, strings,
-and arrays. The scraper should use this reader after extracting raw table files
-from the patch CDN.
+and arrays. The library boundary is `DatTableReader`: scrape/build code should
+construct it once from the checked-in GraphQL schema, then reuse it across raw
+table files after extracting them from the patch CDN.
 
 ## Offline Flow
 

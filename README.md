@@ -74,6 +74,9 @@ cargo run -p poe-cli -- inspect-dat-table \
   --limit 5
 ```
 
+Pass `--all-columns` to inspect every effective schema column, including stable
+generated names for anonymous `_` fields.
+
 Use an explicit patch version when you want a reproducible target:
 
 ```sh

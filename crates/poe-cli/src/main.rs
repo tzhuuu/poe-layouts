@@ -5,8 +5,8 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use poe_ggpk::{
     default_cache_root, fetch_latest_patch_versions, parse_bundle_header, parse_index_bundle,
-    read_dat_table, root_directories, table_name_from_path, unpack_path_reps, CacheMode,
-    DatSchemaClient, DiskCache, PatchCdnSource, PoeGame, DEFAULT_DAT_SCHEMA_URL,
+    root_directories, table_name_from_path, unpack_path_reps, CacheMode, DatSchemaClient,
+    DatTableReader, DiskCache, PatchCdnSource, PoeGame, DEFAULT_DAT_SCHEMA_URL,
 };
 
 const DEFAULT_DAT_SCHEMA_PATH: &str = "schema/dat/_Core.gql";
@@ -185,6 +185,9 @@ enum Command {
         /// Column to read. Repeat this flag to project multiple columns.
         #[arg(long = "column")]
         columns: Vec<String>,
+        /// Read every schema column using generated names for anonymous fields.
+        #[arg(long)]
+        all_columns: bool,
         /// Maximum number of rows to print.
         #[arg(long, default_value_t = 10)]
         limit: usize,
@@ -288,8 +291,9 @@ fn main() -> anyhow::Result<()> {
             schema,
             table,
             columns,
+            all_columns,
             limit,
-        } => inspect_dat_table(&input, &schema, table, columns, limit),
+        } => inspect_dat_table(&input, &schema, table, columns, all_columns, limit),
     }
 }
 
@@ -735,6 +739,7 @@ fn inspect_dat_table(
     schema: &Path,
     table: Option<String>,
     columns: Vec<String>,
+    all_columns: bool,
     limit: usize,
 ) -> anyhow::Result<()> {
     let table_name = table
@@ -743,12 +748,19 @@ fn inspect_dat_table(
     let bytes = std::fs::read(input).with_context(|| format!("read {}", input.display()))?;
     let schema =
         std::fs::read_to_string(schema).with_context(|| format!("read {}", schema.display()))?;
-    let columns = if columns.is_empty() {
+    let reader = DatTableReader::from_graphql(&schema).context("parse dat schema")?;
+    let columns = if all_columns {
+        if !columns.is_empty() {
+            anyhow::bail!("--all-columns cannot be combined with --column");
+        }
+        Vec::new()
+    } else if columns.is_empty() {
         default_columns_for_table(&table_name)
     } else {
         columns
     };
-    let rows = read_dat_table(&bytes, &schema, &table_name, &columns, Some(limit))
+    let rows = reader
+        .read_table(&bytes, &table_name, &columns, Some(limit))
         .with_context(|| format!("read dat table {table_name}"))?;
     println!("{}", serde_json::to_string_pretty(&rows)?);
     Ok(())

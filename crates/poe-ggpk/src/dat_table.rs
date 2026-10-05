@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::ser::SerializeMap;
@@ -30,8 +31,14 @@ pub struct GraphqlColumn {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatTableReader {
+    tables: Vec<GraphqlTable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatColumnHeader {
     pub name: String,
+    pub source_name: String,
     pub offset: usize,
     pub field_type: DatFieldType,
 }
@@ -115,6 +122,111 @@ pub enum DatTableError {
     InvalidUtf16 { offset: usize },
 }
 
+impl DatTableReader {
+    /// Parse a GraphQL dat schema into a reusable table reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatTableError`] when a table or field definition is malformed.
+    pub fn from_graphql(schema: &str) -> Result<Self, DatTableError> {
+        Ok(Self {
+            tables: parse_graphql_schema(schema)?,
+        })
+    }
+
+    /// Return the parsed schema table names.
+    #[must_use]
+    pub fn table_names(&self) -> Vec<&str> {
+        self.tables
+            .iter()
+            .map(|table| table.name.as_str())
+            .collect()
+    }
+
+    /// Return one parsed GraphQL table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatTableError`] when the table is not present in the schema.
+    pub fn table(&self, table_name: &str) -> Result<&GraphqlTable, DatTableError> {
+        self.tables
+            .iter()
+            .find(|table| table.name == table_name)
+            .ok_or_else(|| DatTableError::MissingTable(table_name.to_owned()))
+    }
+
+    /// Build fixed-row headers for one schema table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatTableError`] when a schema type cannot be mapped to a dat
+    /// field layout.
+    pub fn headers(&self, table_name: &str) -> Result<Vec<DatColumnHeader>, DatTableError> {
+        headers_from_graphql_table(self.table(table_name)?)
+    }
+
+    /// Return effective column names for a table.
+    ///
+    /// Anonymous GraphQL `_` columns are expanded into stable names so callers
+    /// can project them by name and serialize rows without duplicate keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatTableError`] when the table is not present or a field layout
+    /// is unsupported.
+    pub fn column_names(&self, table_name: &str) -> Result<Vec<String>, DatTableError> {
+        Ok(self
+            .headers(table_name)?
+            .into_iter()
+            .map(|header| header.name)
+            .collect())
+    }
+
+    /// Return effective column names whose values can be decoded by this reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatTableError`] when the table is not present or a field layout
+    /// is unsupported.
+    pub fn readable_column_names(&self, table_name: &str) -> Result<Vec<String>, DatTableError> {
+        Ok(self
+            .headers(table_name)?
+            .into_iter()
+            .filter(|header| is_readable_field_type(&header.field_type))
+            .map(|header| header.name)
+            .collect())
+    }
+
+    /// Read rows from a `.datc64` table.
+    ///
+    /// Passing an empty column list reads every decodable schema column.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatTableError`] when the table, columns, or binary data are
+    /// invalid.
+    pub fn read_table(
+        &self,
+        bytes: &[u8],
+        table_name: &str,
+        columns: &[String],
+        limit: Option<usize>,
+    ) -> Result<DatTableRows, DatTableError> {
+        let selected_columns = if columns.is_empty() {
+            self.readable_column_names(table_name)?
+        } else {
+            columns.to_vec()
+        };
+        read_dat_table_with_headers(
+            bytes,
+            table_name,
+            &self.headers(table_name)?,
+            &selected_columns,
+            limit,
+        )
+    }
+}
+
 /// Parse the `.datc64` envelope into fixed-width rows and variable data.
 ///
 /// # Errors
@@ -157,57 +269,59 @@ pub fn parse_datc64(bytes: &[u8]) -> Result<DatFile<'_>, DatTableError> {
 /// Returns [`DatTableError`] when the table is missing or a field line is
 /// malformed.
 pub fn parse_graphql_table(schema: &str, table_name: &str) -> Result<GraphqlTable, DatTableError> {
+    parse_graphql_schema(schema)?
+        .into_iter()
+        .find(|table| table.name == table_name)
+        .ok_or_else(|| DatTableError::MissingTable(table_name.to_owned()))
+}
+
+/// Parse every table definition from the checked-in GraphQL dat schema.
+///
+/// # Errors
+///
+/// Returns [`DatTableError`] when a table is not closed or a field line is
+/// malformed.
+pub fn parse_graphql_schema(schema: &str) -> Result<Vec<GraphqlTable>, DatTableError> {
     let mut in_table = false;
+    let mut table_name = String::new();
     let mut columns = Vec::new();
+    let mut tables = Vec::new();
     for raw_line in schema.lines() {
         let line = raw_line.trim();
         if !in_table {
-            if line == format!("type {table_name} {{")
-                || line.starts_with(&format!("type {table_name} "))
-            {
+            if let Some(name) = parse_type_start(line) {
                 in_table = true;
+                name.clone_into(&mut table_name);
                 if line.ends_with('}') {
-                    return Ok(GraphqlTable {
-                        name: table_name.to_owned(),
-                        columns,
+                    tables.push(GraphqlTable {
+                        name: table_name.clone(),
+                        columns: Vec::new(),
                     });
+                    table_name.clear();
+                    in_table = false;
                 }
             }
             continue;
         }
         if line == "}" {
-            return Ok(GraphqlTable {
-                name: table_name.to_owned(),
+            tables.push(GraphqlTable {
+                name: table_name.clone(),
                 columns,
             });
+            table_name.clear();
+            columns = Vec::new();
+            in_table = false;
+            continue;
         }
         if line.is_empty() || line.starts_with('#') || line.starts_with('"') {
             continue;
         }
-        let Some((name, rest)) = line.split_once(':') else {
-            return Err(DatTableError::MalformedField {
-                table: table_name.to_owned(),
-                line: line.to_owned(),
-            });
-        };
-        let type_token = rest
-            .split(|ch: char| ch.is_whitespace() || ch == '@' || ch == '#')
-            .find(|part| !part.is_empty())
-            .ok_or_else(|| DatTableError::MalformedField {
-                table: table_name.to_owned(),
-                line: line.to_owned(),
-            })?;
-        let (array, type_name) = array_type(type_token);
-        columns.push(GraphqlColumn {
-            name: name.trim().to_owned(),
-            type_name: type_name.to_owned(),
-            array,
-        });
+        columns.push(parse_graphql_field(&table_name, line)?);
     }
     if in_table {
-        Err(DatTableError::UnclosedTable(table_name.to_owned()))
+        Err(DatTableError::UnclosedTable(table_name.clone()))
     } else {
-        Err(DatTableError::MissingTable(table_name.to_owned()))
+        Ok(tables)
     }
 }
 
@@ -222,11 +336,13 @@ pub fn headers_from_graphql_table(
 ) -> Result<Vec<DatColumnHeader>, DatTableError> {
     let mut offset = 0;
     let mut headers = Vec::with_capacity(table.columns.len());
-    for column in &table.columns {
+    let effective_names = effective_column_names(table);
+    for (column, name) in table.columns.iter().zip(effective_names) {
         let field_type = field_type_for(table, column)?;
         let field_len = field_length(&field_type)?;
         headers.push(DatColumnHeader {
-            name: column.name.clone(),
+            name,
+            source_name: column.name.clone(),
             offset,
             field_type,
         });
@@ -248,9 +364,17 @@ pub fn read_dat_table(
     columns: &[String],
     limit: Option<usize>,
 ) -> Result<DatTableRows, DatTableError> {
+    DatTableReader::from_graphql(schema)?.read_table(bytes, table_name, columns, limit)
+}
+
+fn read_dat_table_with_headers(
+    bytes: &[u8],
+    table_name: &str,
+    headers: &[DatColumnHeader],
+    columns: &[String],
+    limit: Option<usize>,
+) -> Result<DatTableRows, DatTableError> {
     let dat_file = parse_datc64(bytes)?;
-    let table = parse_graphql_table(schema, table_name)?;
-    let headers = headers_from_graphql_table(&table)?;
     let selected_headers = columns
         .iter()
         .map(|column| {
@@ -263,6 +387,14 @@ pub fn read_dat_table(
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    for header in &selected_headers {
+        if !is_readable_field_type(&header.field_type) {
+            return Err(DatTableError::UnsupportedType {
+                column: header.name.clone(),
+                type_name: field_type_label(&header.field_type),
+            });
+        }
+    }
 
     let row_limit = limit.unwrap_or(dat_file.row_count).min(dat_file.row_count);
     let mut rows = Vec::with_capacity(row_limit);
@@ -300,6 +432,69 @@ fn array_type(type_token: &str) -> (bool, &str) {
         .strip_prefix('[')
         .and_then(|inner| inner.strip_suffix(']'))
         .map_or((false, type_token), |inner| (true, inner))
+}
+
+fn parse_type_start(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("type ")?;
+    rest.split(|ch: char| ch.is_whitespace() || ch == '{')
+        .find(|part| !part.is_empty())
+}
+
+fn parse_graphql_field(table_name: &str, line: &str) -> Result<GraphqlColumn, DatTableError> {
+    let Some((name, rest)) = line.split_once(':') else {
+        return Err(DatTableError::MalformedField {
+            table: table_name.to_owned(),
+            line: line.to_owned(),
+        });
+    };
+    let type_token = rest
+        .split(|ch: char| ch.is_whitespace() || ch == '@' || ch == '#')
+        .find(|part| !part.is_empty())
+        .ok_or_else(|| DatTableError::MalformedField {
+            table: table_name.to_owned(),
+            line: line.to_owned(),
+        })?;
+    let (array, type_name) = array_type(type_token);
+    Ok(GraphqlColumn {
+        name: name.trim().to_owned(),
+        type_name: type_name.to_owned(),
+        array,
+    })
+}
+
+fn effective_column_names(table: &GraphqlTable) -> Vec<String> {
+    let mut counts = HashMap::<String, usize>::new();
+    table
+        .columns
+        .iter()
+        .map(|column| {
+            let base_name = if column.name.is_empty() || column.name == "_" {
+                generated_column_base(column)
+            } else {
+                column.name.clone()
+            };
+            let count = counts.entry(base_name.clone()).or_default();
+            *count += 1;
+            if *count == 1 {
+                base_name
+            } else {
+                format!("{base_name}{count}")
+            }
+        })
+        .collect()
+}
+
+fn generated_column_base(column: &GraphqlColumn) -> String {
+    if column
+        .type_name
+        .chars()
+        .next()
+        .is_some_and(char::is_uppercase)
+    {
+        format!("{}Key", column.type_name)
+    } else {
+        "_".to_owned()
+    }
 }
 
 fn field_type_for(
@@ -347,6 +542,37 @@ fn field_length(field_type: &DatFieldType) -> Result<usize, DatTableError> {
             });
         }
     })
+}
+
+fn is_readable_field_type(field_type: &DatFieldType) -> bool {
+    match field_type {
+        DatFieldType::Unknown => false,
+        DatFieldType::Array(element_type) => is_readable_field_type(element_type),
+        DatFieldType::Bool
+        | DatFieldType::I16
+        | DatFieldType::I32
+        | DatFieldType::U16
+        | DatFieldType::U32
+        | DatFieldType::F32
+        | DatFieldType::String
+        | DatFieldType::RowKey { .. } => true,
+    }
+}
+
+fn field_type_label(field_type: &DatFieldType) -> String {
+    match field_type {
+        DatFieldType::Bool => "bool".to_owned(),
+        DatFieldType::I16 => "i16".to_owned(),
+        DatFieldType::I32 => "i32".to_owned(),
+        DatFieldType::U16 => "u16".to_owned(),
+        DatFieldType::U32 => "u32".to_owned(),
+        DatFieldType::F32 => "f32".to_owned(),
+        DatFieldType::String => "string".to_owned(),
+        DatFieldType::RowKey { foreign: true } => "foreignrow".to_owned(),
+        DatFieldType::RowKey { foreign: false } => "row".to_owned(),
+        DatFieldType::Array(element_type) => format!("[{}]", field_type_label(element_type)),
+        DatFieldType::Unknown => "_".to_owned(),
+    }
 }
 
 fn read_value(
@@ -551,7 +777,9 @@ fn find_sequence(data: &[u8], sequence: &[u8], from_index: usize) -> Option<usiz
 
 #[cfg(test)]
 mod tests {
-    use super::{headers_from_graphql_table, parse_graphql_table, read_dat_table, DatValue};
+    use super::{
+        headers_from_graphql_table, parse_graphql_table, read_dat_table, DatTableReader, DatValue,
+    };
 
     #[test]
     fn graphql_table_headers_are_stable_for_layout_tables() {
@@ -620,6 +848,80 @@ mod tests {
                     "Connections_WorldAreasKeys".to_owned(),
                     DatValue::Array(Vec::new())
                 ),
+            ]
+        );
+    }
+
+    #[test]
+    fn reader_generates_stable_names_for_anonymous_columns() {
+        let schema = r"
+            type OtherTable {
+              Id: string
+            }
+
+            type Example {
+              Id: string
+              _: OtherTable
+              _: OtherTable
+              _: [OtherTable]
+              _: i32
+              _: i32
+              _: [_]
+            }
+        ";
+        let reader = DatTableReader::from_graphql(schema).expect("parse schema");
+        let columns = reader.column_names("Example").expect("column names");
+        let readable = reader
+            .readable_column_names("Example")
+            .expect("readable column names");
+
+        assert_eq!(
+            columns,
+            vec![
+                "Id".to_owned(),
+                "OtherTableKey".to_owned(),
+                "OtherTableKey2".to_owned(),
+                "OtherTableKey3".to_owned(),
+                "_".to_owned(),
+                "_2".to_owned(),
+                "_3".to_owned(),
+            ]
+        );
+        assert_eq!(
+            readable,
+            vec![
+                "Id".to_owned(),
+                "OtherTableKey".to_owned(),
+                "OtherTableKey2".to_owned(),
+                "OtherTableKey3".to_owned(),
+                "_".to_owned(),
+                "_2".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn reader_can_be_reused_for_projected_datc64_rows() {
+        let schema = r"
+            type WorldAreas {
+              Id: string
+              Act: i32
+              IsTown: bool
+              Connections_WorldAreasKeys: [WorldAreas]
+            }
+        ";
+        let reader = DatTableReader::from_graphql(schema).expect("parse schema");
+        let bytes = synthetic_world_areas_datc64();
+        let rows = reader
+            .read_table(&bytes, "WorldAreas", &["Id".to_owned()], Some(1))
+            .expect("read table");
+
+        assert_eq!(rows.columns, vec!["Id".to_owned()]);
+        assert_eq!(
+            rows.rows[0].0,
+            vec![
+                ("_index".to_owned(), DatValue::Unsigned(0)),
+                ("Id".to_owned(), DatValue::String("1_1_1".to_owned())),
             ]
         );
     }

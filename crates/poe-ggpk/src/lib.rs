@@ -19,9 +19,9 @@ pub use dat_schema::{
     DatSchemaSnapshotManifest, DEFAULT_DAT_SCHEMA_CACHE_KEY, DEFAULT_DAT_SCHEMA_URL,
 };
 pub use dat_table::{
-    headers_from_graphql_table, parse_datc64, parse_graphql_table, read_dat_table,
-    table_name_from_path, DatColumnHeader, DatFieldType, DatFile, DatRow, DatTableError,
-    DatTableRows, DatValue, GraphqlColumn, GraphqlTable,
+    headers_from_graphql_table, parse_datc64, parse_graphql_schema, parse_graphql_table,
+    read_dat_table, table_name_from_path, DatColumnHeader, DatFieldType, DatFile, DatRow,
+    DatTableError, DatTableReader, DatTableRows, DatValue, GraphqlColumn, GraphqlTable,
 };
 pub use ggpk::{GgpkError, RecordHeader, RecordTag};
 pub use index_bundle::{
