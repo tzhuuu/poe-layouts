@@ -3,9 +3,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use poe_ggpk::{
-    BundleDecompressor, CacheMode, DatRow, DatValue, DiskCache, ExtractedLogicalFile,
-    GraphqlDatError, GraphqlDatRows, GraphqlDatSchema, PatchCdnSource, PatchClient,
-    PatchClientError,
+    read_typed_graphql_table, BundleDecompressor, CacheMode, DatRowView, DatTableError, DiskCache,
+    ExtractedLogicalFile, GraphqlDatError, GraphqlDatSchema, PatchCdnSource, PatchClient,
+    PatchClientError, TypedDatTableError, TypedDatTableRow,
 };
 use poe_schema::{
     build_layout_database, root_layout_database, LayoutDatabaseModel, SchemaError, SourceFileModel,
@@ -127,6 +127,8 @@ pub enum CampaignScrapeError {
     #[error(transparent)]
     GraphqlDat(#[from] GraphqlDatError),
     #[error(transparent)]
+    TypedDatTable(#[from] TypedDatTableError),
+    #[error(transparent)]
     Schema(#[from] SchemaError),
     #[error("io error for {path}: {source}")]
     Io {
@@ -192,30 +194,11 @@ where
     let world_areas_bytes = read(raw_output_path(&files_dir, "data/worldareas.datc64"))?;
     let topologies_bytes = read(raw_output_path(&files_dir, "data/topologies.datc64"))?;
 
-    let world_areas = schema.read_table(
-        &world_areas_bytes,
-        "WorldAreas",
-        &[
-            "Id".to_owned(),
-            "Name".to_owned(),
-            "Act".to_owned(),
-            "IsTown".to_owned(),
-            "AreaLevel".to_owned(),
-            "IsMapArea".to_owned(),
-            "TopologiesKeys".to_owned(),
-            "TSIFile".to_owned(),
-        ],
-        None,
-    )?;
-    let topologies = schema.read_table(
-        &topologies_bytes,
-        "Topologies",
-        &["Id".to_owned(), "DGRFile".to_owned()],
-        None,
-    )?;
+    let world_areas = read_typed_graphql_table::<WorldAreaRow>(&schema, &world_areas_bytes, None)?;
+    let topologies = read_typed_graphql_table::<TopologyRow>(&schema, &topologies_bytes, None)?;
 
-    let topology_by_index = topology_summaries(&topologies)?;
-    let selected_areas = campaign_area_summaries(&world_areas)?;
+    let topology_by_index = topology_summaries(&topologies);
+    let selected_areas = campaign_area_summaries(&world_areas);
     let mut candidates = terrain_candidates(&selected_areas, &topology_by_index);
     candidates.sort();
     candidates.dedup();
@@ -421,79 +404,109 @@ pub fn inspect_layout_database(input: &Path) -> Result<LayoutDbSummary, Campaign
     })
 }
 
-fn topology_summaries(
-    rows: &GraphqlDatRows,
-) -> Result<HashMap<usize, TopologySummary>, CampaignScrapeError> {
-    rows.rows
-        .iter()
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorldAreaRow {
+    row_index: usize,
+    id: String,
+    name: String,
+    act: i64,
+    is_town: bool,
+    area_level: i64,
+    is_map_area: bool,
+    topology_indices: Vec<usize>,
+    tsi_file: Option<String>,
+}
+
+impl TypedDatTableRow for WorldAreaRow {
+    const TABLE_NAME: &'static str = "WorldAreas";
+    const COLUMNS: &'static [&'static str] = &[
+        "Id",
+        "Name",
+        "Act",
+        "IsTown",
+        "AreaLevel",
+        "IsMapArea",
+        "TopologiesKeys",
+        "TSIFile",
+    ];
+
+    fn from_dat_row(row: DatRowView<'_>) -> Result<Self, DatTableError> {
+        Ok(Self {
+            row_index: row.row_index()?,
+            id: row.string_or_default("Id")?,
+            name: row.string_or_default("Name")?,
+            act: row.integer_or_default("Act")?,
+            is_town: row.bool_or_default("IsTown")?,
+            area_level: row.integer_or_default("AreaLevel")?,
+            is_map_area: row.bool_or_default("IsMapArea")?,
+            topology_indices: row.unsigned_array("TopologiesKeys")?,
+            tsi_file: row.non_empty_string("TSIFile")?.map(normalize_logical_path),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TopologyRow {
+    row_index: usize,
+    id: String,
+    graph_file: Option<String>,
+}
+
+impl TypedDatTableRow for TopologyRow {
+    const TABLE_NAME: &'static str = "Topologies";
+    const COLUMNS: &'static [&'static str] = &["Id", "DGRFile"];
+
+    fn from_dat_row(row: DatRowView<'_>) -> Result<Self, DatTableError> {
+        Ok(Self {
+            row_index: row.row_index()?,
+            id: row.string_or_default("Id")?,
+            graph_file: row.non_empty_string("DGRFile")?,
+        })
+    }
+}
+
+fn topology_summaries(rows: &[TopologyRow]) -> HashMap<usize, TopologySummary> {
+    rows.iter()
         .map(|row| {
-            let row_index = row_unsigned(row, "_index")
-                .ok_or(CampaignScrapeError::IntegerConversion {
-                    field: "Topologies._index",
-                    target_type: "usize",
-                    value: "<missing>".to_owned(),
-                })?
-                .try_into()
-                .map_err(|_| CampaignScrapeError::IntegerConversion {
-                    field: "Topologies._index",
-                    target_type: "usize",
-                    value: row_unsigned(row, "_index").unwrap_or_default().to_string(),
-                })?;
-            Ok((
-                row_index,
+            (
+                row.row_index,
                 TopologySummary {
-                    row_index,
-                    id: row_string(row, "Id").unwrap_or_default(),
-                    graph_file: non_empty_string(row, "DGRFile"),
+                    row_index: row.row_index,
+                    id: row.id.clone(),
+                    graph_file: row.graph_file.clone(),
                 },
-            ))
+            )
         })
         .collect()
 }
 
-fn campaign_area_summaries(
-    rows: &GraphqlDatRows,
-) -> Result<Vec<CampaignAreaSummary>, CampaignScrapeError> {
+fn campaign_area_summaries(rows: &[WorldAreaRow]) -> Vec<CampaignAreaSummary> {
     let mut areas = Vec::new();
-    for row in &rows.rows {
-        let id = row_string(row, "Id").unwrap_or_default();
-        if id == "NULL" || id.is_empty() {
+    for row in rows {
+        if row.id == "NULL" || row.id.is_empty() {
             continue;
         }
-        let act = row_integer(row, "Act").unwrap_or_default();
-        if !(1..=5).contains(&act) {
+        if !(1..=5).contains(&row.act) {
             continue;
         }
-        if !id.starts_with(&format!("1_{act}")) {
+        if !row.id.starts_with(&format!("1_{}", row.act)) {
             continue;
         }
-        if row_bool(row, "IsMapArea").unwrap_or(false) {
+        if row.is_map_area {
             continue;
         }
-        let row_index = row_unsigned(row, "_index")
-            .ok_or(CampaignScrapeError::IntegerConversion {
-                field: "WorldAreas._index",
-                target_type: "usize",
-                value: "<missing>".to_owned(),
-            })?
-            .try_into()
-            .map_err(|_| CampaignScrapeError::IntegerConversion {
-                field: "WorldAreas._index",
-                target_type: "usize",
-                value: row_unsigned(row, "_index").unwrap_or_default().to_string(),
-            })?;
         areas.push(CampaignAreaSummary {
-            row_index,
-            id,
-            name: row_string(row, "Name").unwrap_or_default(),
-            act,
-            is_town: row_bool(row, "IsTown").unwrap_or(false),
-            area_level: row_integer(row, "AreaLevel").unwrap_or_default(),
-            topology_indices: row_array_unsigned(row, "TopologiesKeys"),
-            tsi_file: non_empty_string(row, "TSIFile").map(normalize_logical_path),
+            row_index: row.row_index,
+            id: row.id.clone(),
+            name: row.name.clone(),
+            act: row.act,
+            is_town: row.is_town,
+            area_level: row.area_level,
+            topology_indices: row.topology_indices.clone(),
+            tsi_file: row.tsi_file.clone(),
         });
     }
-    Ok(areas)
+    areas
 }
 
 fn terrain_candidates(
@@ -599,60 +612,6 @@ fn normalize_logical_path(path: impl AsRef<str>) -> String {
 fn replace_extension(path: &str, extension: &str) -> Option<String> {
     let (base, _) = path.rsplit_once('.')?;
     Some(format!("{base}.{extension}"))
-}
-
-fn row_value<'a>(row: &'a DatRow, name: &str) -> Option<&'a DatValue> {
-    row.0
-        .iter()
-        .find_map(|(key, value)| (key == name).then_some(value))
-}
-
-fn row_string(row: &DatRow, name: &str) -> Option<String> {
-    match row_value(row, name)? {
-        DatValue::String(value) => Some(value.clone()),
-        _ => None,
-    }
-}
-
-fn non_empty_string(row: &DatRow, name: &str) -> Option<String> {
-    row_string(row, name).filter(|value| !value.is_empty())
-}
-
-fn row_integer(row: &DatRow, name: &str) -> Option<i64> {
-    match row_value(row, name)? {
-        DatValue::Integer(value) => Some(*value),
-        DatValue::Unsigned(value) => i64::try_from(*value).ok(),
-        _ => None,
-    }
-}
-
-fn row_unsigned(row: &DatRow, name: &str) -> Option<u64> {
-    match row_value(row, name)? {
-        DatValue::Unsigned(value) => Some(*value),
-        DatValue::Integer(value) => u64::try_from(*value).ok(),
-        _ => None,
-    }
-}
-
-fn row_bool(row: &DatRow, name: &str) -> Option<bool> {
-    match row_value(row, name)? {
-        DatValue::Bool(value) => Some(*value),
-        _ => None,
-    }
-}
-
-fn row_array_unsigned(row: &DatRow, name: &str) -> Vec<usize> {
-    match row_value(row, name) {
-        Some(DatValue::Array(values)) => values
-            .iter()
-            .filter_map(|value| match value {
-                DatValue::Unsigned(value) => usize::try_from(*value).ok(),
-                DatValue::Integer(value) => usize::try_from(*value).ok(),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
 }
 
 fn convert_u32(field: &'static str, value: usize) -> Result<u32, CampaignScrapeError> {

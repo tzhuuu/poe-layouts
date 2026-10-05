@@ -13,6 +13,7 @@ poe-cli
      -> bundle/index parsers
      -> datc64 binary reader
      -> GraphQL dat schema interpreter
+     -> typed dat table projection
   -> poe-layouts-core
      -> campaign Acts 1-5 scrape API
      -> local raw/model artifacts
@@ -31,8 +32,9 @@ poe-cli
   verification. It also owns generic PoE file readers, plus source-specific
   fetch clients such as `DatSchemaClient`.
 - `poe-layouts-core` owns milestone-2 layout-domain APIs. It consumes
-  `PatchClient`, `GraphqlDatSchema`, and a caller-provided `BundleDecompressor`
-  to produce raw campaign scrape manifests and app-facing FlatBuffers artifacts.
+  `PatchClient`, `GraphqlDatSchema`, typed dat table projections, and a
+  caller-provided `BundleDecompressor` to produce raw campaign scrape manifests
+  and app-facing FlatBuffers artifacts.
 - `scripts/ooz-decompress-bundle.mjs` is the temporary Oodle bridge. It should
   stay thin: read bundle bytes, decode chunks with `ooz-wasm`, write bytes.
 - The visualizer remains a local Tauri app. Vite is a frontend development and
@@ -46,6 +48,7 @@ poe-cli
 bundle.rs             bundle header/decompression primitives
 cache.rs              shared disk cache, manifests, verification, clearing
 dat_schema_client.rs  fetch/update checked-in GraphQL dat schema snapshots
+dat_table.rs          typed table row projection over GraphQL dat rows
 datc64.rs             generic .datc64 binary reader
 dat_graphql.rs        GraphQL schema interpreter for named dat tables/columns
 ggpk.rs               low-level GGPK record scanning primitives
@@ -55,9 +58,11 @@ patch_client.rs       high-level patch index loading and logical file extraction
 ```
 
 The dependency direction should stay one-way: `dat_graphql` may depend on
-`datc64`, but `datc64` must not know about GraphQL or specific tables. The
-future layout scraper should depend on `GraphqlDatSchema` for table reads and
-add PoE-layout semantics outside these generic readers.
+`datc64`, and `dat_table` may depend on `dat_graphql`, but `datc64` must not
+know about GraphQL or specific tables. Layout, monster, item, or other
+domain-specific crates should depend on `GraphqlDatSchema` plus
+`TypedDatTableRow` for table reads and keep PoE-domain semantics outside these
+generic readers.
 
 `PatchClient` is the higher-level file access boundary for milestone 2. It owns
 fetching cached CDN bundles, loading the decompressed index, resolving logical
@@ -111,6 +116,8 @@ Delivered outcomes:
     field layouts, UTF-16 strings, row keys, arrays, and projected rows.
   - `dat_graphql` is the schema-specific layer for GraphQL table definitions,
     effective column names, column layouts, and named projections.
+- Typed table projection through `dat_table`, where domain crates define small
+  `TypedDatTableRow` adapters and reuse shared row access/type validation.
 - CLI inspection commands for the above flows.
 - Rust tests and live-current table validation for the initial layout-critical
   tables.
@@ -211,6 +218,22 @@ interpretation is isolated in `dat_graphql`. The library boundary for
 table-aware scrape/build code is `GraphqlDatSchema`: construct it once from the
 checked-in GraphQL schema, then reuse it across raw table files after extracting
 them from the patch CDN.
+
+Typed domain reads use the same lower layers:
+
+```text
+read_typed_graphql_table::<WorldAreaRow>
+  -> WorldAreaRow::TABLE_NAME / COLUMNS select a stable projection
+  -> GraphqlDatSchema reads the projected datc64 rows
+  -> DatRowView validates required column value types
+  -> WorldAreaRow::from_dat_row maps raw cells into layout-domain fields
+```
+
+The generic API lives in `poe-ggpk` so later scrapers can define their own typed
+rows without duplicating value lookup, row index handling, or type mismatch
+errors. `poe-layouts-core` currently defines `WorldAreaRow` and `TopologyRow`
+as private adapters because those table meanings belong to the Acts 1-5 scrape
+flow, not the generic file reader.
 
 ## Offline Flow
 
