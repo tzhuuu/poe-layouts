@@ -9,7 +9,9 @@ const GRANULARITY_OFFSET = 40;
 const CHUNK_SIZES_OFFSET = 60;
 
 function usage() {
-  console.error("usage: ooz-decompress-bundle.mjs <input-bundle> <output-bytes>");
+  console.error(
+    "usage: ooz-decompress-bundle.mjs <input-bundle> <output-bytes> [slice-offset slice-size]",
+  );
 }
 
 function readU32(buffer, offset) {
@@ -27,7 +29,7 @@ function chunkDecompressedSize(totalSize, granularity, chunkIndex, chunkCount) {
   return remainder === 0 ? granularity : remainder;
 }
 
-const [inputPath, outputPath] = process.argv.slice(2);
+const [inputPath, outputPath, sliceOffsetArg, sliceSizeArg] = process.argv.slice(2);
 if (!inputPath || !outputPath) {
   usage();
   process.exit(2);
@@ -38,10 +40,23 @@ const decompressedSize = readU32(bundle, DECOMPRESSED_SIZE_OFFSET);
 const chunkCount = readU32(bundle, CHUNK_COUNT_OFFSET);
 const granularity = readU32(bundle, GRANULARITY_OFFSET);
 const payloadOffset = CHUNK_SIZES_OFFSET + chunkCount * U32_SIZE;
-const output = new Uint8Array(decompressedSize);
+const sliceOffset = sliceOffsetArg === undefined ? 0 : Number.parseInt(sliceOffsetArg, 10);
+const sliceSize = sliceSizeArg === undefined ? decompressedSize : Number.parseInt(sliceSizeArg, 10);
+if (!Number.isSafeInteger(sliceOffset) || sliceOffset < 0) {
+  throw new Error(`invalid slice offset: ${sliceOffsetArg}`);
+}
+if (!Number.isSafeInteger(sliceSize) || sliceSize < 0) {
+  throw new Error(`invalid slice size: ${sliceSizeArg}`);
+}
+const sliceEnd = sliceOffset + sliceSize;
+if (sliceEnd > decompressedSize) {
+  throw new Error(`slice overruns decompressed bundle: ${sliceEnd} > ${decompressedSize}`);
+}
+const output = new Uint8Array(sliceSize);
 
 let compressedOffset = payloadOffset;
 let decompressedOffset = 0;
+let outputOffset = 0;
 for (let idx = 0; idx < chunkCount; idx += 1) {
   const compressedSize = readU32(bundle, CHUNK_SIZES_OFFSET + idx * U32_SIZE);
   const compressedEnd = compressedOffset + compressedSize;
@@ -54,10 +69,17 @@ for (let idx = 0; idx < chunkCount; idx += 1) {
     idx,
     chunkCount,
   );
-  const compressed = bundle.subarray(compressedOffset, compressedEnd);
-  output.set(decompress(compressed, rawSize), decompressedOffset);
+  const decompressedEnd = decompressedOffset + rawSize;
+  if (Math.max(decompressedOffset, sliceOffset) < Math.min(decompressedEnd, sliceEnd)) {
+    const compressed = bundle.subarray(compressedOffset, compressedEnd);
+    const decoded = decompress(compressed, rawSize);
+    const copyBegin = Math.max(sliceOffset - decompressedOffset, 0);
+    const copyEnd = Math.min(sliceEnd, decompressedEnd) - decompressedOffset;
+    output.set(decoded.subarray(copyBegin, copyEnd), outputOffset);
+    outputOffset += copyEnd - copyBegin;
+  }
   compressedOffset = compressedEnd;
-  decompressedOffset += rawSize;
+  decompressedOffset = decompressedEnd;
 }
 
 await writeFile(outputPath, output);

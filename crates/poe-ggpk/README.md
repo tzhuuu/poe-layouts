@@ -57,6 +57,14 @@ that step will use.
 The reusable Rust crate owns bundle/index orchestration and parsing. The CLI
 currently uses a small Node.js `ooz-wasm` bridge for Oodle chunk decompression;
 porting that decoder to a native Rust implementation remains a future cleanup.
+With that bridge installed, the CLI can resolve and extract individual logical
+files:
+
+```sh
+cargo run -p poe-cli -- extract-file \
+  --logical-path data/worldareas.datc64 \
+  --out .poe-layouts/raw/data/worldareas.datc64
+```
 
 The live test is ignored by default because it depends on the current patch CDN:
 

@@ -55,6 +55,14 @@ cargo run -p poe-cli -- inspect-index --prefix metadata/terrain/ --limit 10
 cargo run -p poe-cli -- inspect-index --logical-path data/worldareas.datc64
 ```
 
+Extract one logical file from the patch CDN cache:
+
+```sh
+cargo run -p poe-cli -- extract-file \
+  --logical-path data/worldareas.datc64 \
+  --out .poe-layouts/raw/data/worldareas.datc64
+```
+
 Use an explicit patch version when you want a reproducible target:
 
 ```sh
