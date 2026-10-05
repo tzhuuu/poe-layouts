@@ -1,0 +1,23 @@
+/target/
+/.idea/
+/.vscode/
+*.swp
+*.swo
+
+# Frontend dependency/build outputs.
+/app/node_modules/
+/app/dist/
+/app/.vite/
+
+# Local pipeline outputs and game data.
+/.poe-layouts/
+/data/raw/
+/data/cache/
+/data/*.sqlite
+/data/*.sqlite-shm
+/data/*.sqlite-wal
+/app/public/data/*.bin
+/app/public/data/*.json
+
+# Generated bindings are reproducible from schema/poe_layouts.fbs.
+/app/src/generated/
