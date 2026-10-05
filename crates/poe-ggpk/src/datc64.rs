@@ -9,7 +9,7 @@ const MEM32_NULL: u32 = 0xfefe_fefe;
 const VDATA_MAGIC: [u8; 8] = [0xbb; 8];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DatFile<'a> {
+pub struct Datc64File<'a> {
     pub row_count: usize,
     pub row_length: usize,
     pub data_fixed: &'a [u8],
@@ -17,7 +17,7 @@ pub struct DatFile<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DatColumn {
+pub struct Datc64Column {
     pub name: String,
     pub offset: usize,
     pub field_type: DatFieldType,
@@ -50,7 +50,7 @@ pub enum DatValue {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct DatRows {
+pub struct Datc64Rows {
     pub row_count: usize,
     pub row_length: usize,
     pub columns: Vec<String>,
@@ -74,7 +74,7 @@ impl Serialize for DatRow {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum DatFileError {
+pub enum Datc64Error {
     #[error("invalid datc64 file size: {byte_len}")]
     InvalidFileSize { byte_len: usize },
     #[error("datc64 variable-data marker not found")]
@@ -93,28 +93,28 @@ pub enum DatFileError {
     InvalidUtf16 { offset: usize },
 }
 
-pub fn parse_datc64(bytes: &[u8]) -> Result<DatFile<'_>, DatFileError> {
+pub fn parse_datc64(bytes: &[u8]) -> Result<Datc64File<'_>, Datc64Error> {
     if bytes.len() < ROW_COUNT_SIZE + VDATA_MAGIC.len() {
-        return Err(DatFileError::InvalidFileSize {
+        return Err(Datc64Error::InvalidFileSize {
             byte_len: bytes.len(),
         });
     }
     let row_count = usize::try_from(read_u32(bytes, 0, "file")?).unwrap_or(usize::MAX);
     let body = &bytes[ROW_COUNT_SIZE..];
     let fixed_len = find_aligned_sequence(body, &VDATA_MAGIC, row_count)
-        .ok_or(DatFileError::MissingVariableData)?;
+        .ok_or(Datc64Error::MissingVariableData)?;
     let row_length = if row_count == 0 {
         0
     } else {
         if fixed_len % row_count != 0 {
-            return Err(DatFileError::MisalignedFixedData {
+            return Err(Datc64Error::MisalignedFixedData {
                 fixed_len,
                 row_count,
             });
         }
         fixed_len / row_count
     };
-    Ok(DatFile {
+    Ok(Datc64File {
         row_count,
         row_length,
         data_fixed: &body[..fixed_len],
@@ -122,15 +122,15 @@ pub fn parse_datc64(bytes: &[u8]) -> Result<DatFile<'_>, DatFileError> {
     })
 }
 
-pub fn read_projected_rows(
+pub fn read_datc64_rows(
     bytes: &[u8],
-    columns: &[DatColumn],
+    columns: &[Datc64Column],
     limit: Option<usize>,
-) -> Result<DatRows, DatFileError> {
+) -> Result<Datc64Rows, Datc64Error> {
     let dat_file = parse_datc64(bytes)?;
     for column in columns {
         if !is_readable_field_type(&column.field_type) {
-            return Err(DatFileError::UnsupportedType(field_type_label(
+            return Err(Datc64Error::UnsupportedType(field_type_label(
                 &column.field_type,
             )));
         }
@@ -150,7 +150,7 @@ pub fn read_projected_rows(
         rows.push(DatRow(row));
     }
 
-    Ok(DatRows {
+    Ok(Datc64Rows {
         row_count: dat_file.row_count,
         row_length: dat_file.row_length,
         columns: columns.iter().map(|column| column.name.clone()).collect(),
@@ -158,7 +158,7 @@ pub fn read_projected_rows(
     })
 }
 
-pub fn field_length(field_type: &DatFieldType) -> Result<usize, DatFileError> {
+pub fn field_length(field_type: &DatFieldType) -> Result<usize, Datc64Error> {
     Ok(match field_type {
         DatFieldType::Bool => 1,
         DatFieldType::I16 | DatFieldType::U16 => 2,
@@ -166,7 +166,7 @@ pub fn field_length(field_type: &DatFieldType) -> Result<usize, DatFileError> {
         DatFieldType::String | DatFieldType::RowKey { foreign: false } => 8,
         DatFieldType::RowKey { foreign: true } | DatFieldType::Array(_) => 16,
         DatFieldType::Unknown => {
-            return Err(DatFileError::UnsupportedType(field_type_label(field_type)));
+            return Err(Datc64Error::UnsupportedType(field_type_label(field_type)));
         }
     })
 }
@@ -205,15 +205,15 @@ pub fn field_type_label(field_type: &DatFieldType) -> String {
 }
 
 fn read_value(
-    dat_file: &DatFile<'_>,
+    dat_file: &Datc64File<'_>,
     row_index: usize,
     field_offset: usize,
     field_type: &DatFieldType,
-) -> Result<DatValue, DatFileError> {
+) -> Result<DatValue, Datc64Error> {
     let offset = row_index
         .checked_mul(dat_file.row_length)
         .and_then(|base| base.checked_add(field_offset))
-        .ok_or(DatFileError::OutOfBounds {
+        .ok_or(Datc64Error::OutOfBounds {
             section: "fixed",
             offset: usize::MAX,
             byte_len: 0,
@@ -222,12 +222,12 @@ fn read_value(
 }
 
 fn read_one(
-    dat_file: &DatFile<'_>,
+    dat_file: &Datc64File<'_>,
     section: &[u8],
     section_name: &'static str,
     offset: usize,
     field_type: &DatFieldType,
-) -> Result<DatValue, DatFileError> {
+) -> Result<DatValue, Datc64Error> {
     match field_type {
         DatFieldType::Bool => Ok(DatValue::Bool(read_u8(section, offset, section_name)? != 0)),
         DatFieldType::I16 => Ok(DatValue::Integer(i64::from(read_i16(
@@ -290,19 +290,18 @@ fn read_one(
             }
             Ok(DatValue::Array(values))
         }
-        DatFieldType::Unknown => Err(DatFileError::UnsupportedType(field_type_label(field_type))),
+        DatFieldType::Unknown => Err(Datc64Error::UnsupportedType(field_type_label(field_type))),
     }
 }
 
-fn read_string(data_variable: &[u8], offset: usize) -> Result<DatValue, DatFileError> {
-    let mut end =
-        find_zero_sequence(data_variable, 4, offset).ok_or(DatFileError::OutOfBounds {
-            section: "variable",
-            offset,
-            byte_len: 4,
-        })?;
+fn read_string(data_variable: &[u8], offset: usize) -> Result<DatValue, Datc64Error> {
+    let mut end = find_zero_sequence(data_variable, 4, offset).ok_or(Datc64Error::OutOfBounds {
+        section: "variable",
+        offset,
+        byte_len: 4,
+    })?;
     while !(end - offset).is_multiple_of(2) {
-        end = find_zero_sequence(data_variable, 4, end + 1).ok_or(DatFileError::OutOfBounds {
+        end = find_zero_sequence(data_variable, 4, end + 1).ok_or(Datc64Error::OutOfBounds {
             section: "variable",
             offset: end + 1,
             byte_len: 4,
@@ -315,16 +314,16 @@ fn read_string(data_variable: &[u8], offset: usize) -> Result<DatValue, DatFileE
         .collect::<Vec<_>>();
     String::from_utf16(&code_units)
         .map(DatValue::String)
-        .map_err(|_| DatFileError::InvalidUtf16 { offset })
+        .map_err(|_| Datc64Error::InvalidUtf16 { offset })
 }
 
-fn read_u8(data: &[u8], offset: usize, section: &'static str) -> Result<u8, DatFileError> {
+fn read_u8(data: &[u8], offset: usize, section: &'static str) -> Result<u8, Datc64Error> {
     Ok(*checked_slice(data, offset, 1, section)?
         .first()
         .expect("slice length checked"))
 }
 
-fn read_i16(data: &[u8], offset: usize, section: &'static str) -> Result<i16, DatFileError> {
+fn read_i16(data: &[u8], offset: usize, section: &'static str) -> Result<i16, Datc64Error> {
     Ok(i16::from_le_bytes(
         checked_slice(data, offset, 2, section)?
             .try_into()
@@ -332,7 +331,7 @@ fn read_i16(data: &[u8], offset: usize, section: &'static str) -> Result<i16, Da
     ))
 }
 
-fn read_u16(data: &[u8], offset: usize, section: &'static str) -> Result<u16, DatFileError> {
+fn read_u16(data: &[u8], offset: usize, section: &'static str) -> Result<u16, Datc64Error> {
     Ok(u16::from_le_bytes(
         checked_slice(data, offset, 2, section)?
             .try_into()
@@ -340,7 +339,7 @@ fn read_u16(data: &[u8], offset: usize, section: &'static str) -> Result<u16, Da
     ))
 }
 
-fn read_i32(data: &[u8], offset: usize, section: &'static str) -> Result<i32, DatFileError> {
+fn read_i32(data: &[u8], offset: usize, section: &'static str) -> Result<i32, Datc64Error> {
     Ok(i32::from_le_bytes(
         checked_slice(data, offset, 4, section)?
             .try_into()
@@ -348,7 +347,7 @@ fn read_i32(data: &[u8], offset: usize, section: &'static str) -> Result<i32, Da
     ))
 }
 
-fn read_u32(data: &[u8], offset: usize, section: &'static str) -> Result<u32, DatFileError> {
+fn read_u32(data: &[u8], offset: usize, section: &'static str) -> Result<u32, Datc64Error> {
     Ok(u32::from_le_bytes(
         checked_slice(data, offset, 4, section)?
             .try_into()
@@ -356,7 +355,7 @@ fn read_u32(data: &[u8], offset: usize, section: &'static str) -> Result<u32, Da
     ))
 }
 
-fn read_f32(data: &[u8], offset: usize, section: &'static str) -> Result<f32, DatFileError> {
+fn read_f32(data: &[u8], offset: usize, section: &'static str) -> Result<f32, Datc64Error> {
     Ok(f32::from_le_bytes(
         checked_slice(data, offset, 4, section)?
             .try_into()
@@ -369,9 +368,9 @@ fn checked_slice<'a>(
     offset: usize,
     byte_len: usize,
     section: &'static str,
-) -> Result<&'a [u8], DatFileError> {
+) -> Result<&'a [u8], Datc64Error> {
     data.get(offset..offset + byte_len)
-        .ok_or(DatFileError::OutOfBounds {
+        .ok_or(Datc64Error::OutOfBounds {
             section,
             offset,
             byte_len,
@@ -403,24 +402,24 @@ fn find_sequence(data: &[u8], sequence: &[u8], from_index: usize) -> Option<usiz
 
 #[cfg(test)]
 mod tests {
-    use super::{read_projected_rows, DatColumn, DatFieldType, DatValue};
+    use super::{read_datc64_rows, DatFieldType, DatValue, Datc64Column};
 
     #[test]
     fn generic_datc64_reader_reads_projected_columns_without_schema() {
         let bytes = synthetic_datc64();
         let columns = vec![
-            DatColumn {
+            Datc64Column {
                 name: "Id".to_owned(),
                 offset: 0,
                 field_type: DatFieldType::String,
             },
-            DatColumn {
+            Datc64Column {
                 name: "Act".to_owned(),
                 offset: 8,
                 field_type: DatFieldType::I32,
             },
         ];
-        let rows = read_projected_rows(&bytes, &columns, None).expect("read rows");
+        let rows = read_datc64_rows(&bytes, &columns, None).expect("read rows");
 
         assert_eq!(rows.row_count, 1);
         assert_eq!(rows.row_length, 12);

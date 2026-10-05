@@ -5,39 +5,39 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::dat_file::{
-    field_length, field_type_label, is_readable_field_type, read_projected_rows, DatColumn,
-    DatFieldType, DatFileError, DatRow,
+use crate::datc64::{
+    field_length, field_type_label, is_readable_field_type, read_datc64_rows, DatFieldType, DatRow,
+    Datc64Column, Datc64Error,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphqlTable {
+pub struct GraphqlDatTable {
     pub name: String,
-    pub columns: Vec<GraphqlColumn>,
+    pub columns: Vec<GraphqlDatColumn>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphqlColumn {
+pub struct GraphqlDatColumn {
     pub name: String,
     pub type_name: String,
     pub array: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DatTableReader {
-    tables: Vec<GraphqlTable>,
+pub struct GraphqlDatSchema {
+    tables: Vec<GraphqlDatTable>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DatColumnHeader {
+pub struct GraphqlDatColumnLayout {
     pub name: String,
     pub source_name: String,
     pub offset: usize,
     pub field_type: DatFieldType,
 }
 
-impl From<&DatColumnHeader> for DatColumn {
-    fn from(header: &DatColumnHeader) -> Self {
+impl From<&GraphqlDatColumnLayout> for Datc64Column {
+    fn from(header: &GraphqlDatColumnLayout) -> Self {
         Self {
             name: header.name.clone(),
             offset: header.offset,
@@ -47,7 +47,7 @@ impl From<&DatColumnHeader> for DatColumn {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct DatTableRows {
+pub struct GraphqlDatRows {
     pub table_name: String,
     pub row_count: usize,
     pub row_length: usize,
@@ -56,9 +56,9 @@ pub struct DatTableRows {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum DatTableError {
+pub enum GraphqlDatError {
     #[error(transparent)]
-    DatFile(#[from] DatFileError),
+    Datc64(#[from] Datc64Error),
     #[error("GraphQL table not found: {0}")]
     MissingTable(String),
     #[error("GraphQL table is not closed: {0}")]
@@ -71,10 +71,10 @@ pub enum DatTableError {
     UnsupportedType { column: String, type_name: String },
 }
 
-impl DatTableReader {
-    pub fn from_graphql(schema: &str) -> Result<Self, DatTableError> {
+impl GraphqlDatSchema {
+    pub fn parse(schema: &str) -> Result<Self, GraphqlDatError> {
         Ok(Self {
-            tables: parse_graphql_schema(schema)?,
+            tables: parse_graphql_dat_schema(schema)?,
         })
     }
 
@@ -86,28 +86,31 @@ impl DatTableReader {
             .collect()
     }
 
-    pub fn table(&self, table_name: &str) -> Result<&GraphqlTable, DatTableError> {
+    pub fn table(&self, table_name: &str) -> Result<&GraphqlDatTable, GraphqlDatError> {
         self.tables
             .iter()
             .find(|table| table.name == table_name)
-            .ok_or_else(|| DatTableError::MissingTable(table_name.to_owned()))
+            .ok_or_else(|| GraphqlDatError::MissingTable(table_name.to_owned()))
     }
 
-    pub fn headers(&self, table_name: &str) -> Result<Vec<DatColumnHeader>, DatTableError> {
-        headers_from_graphql_table(self.table(table_name)?)
+    pub fn column_layouts(
+        &self,
+        table_name: &str,
+    ) -> Result<Vec<GraphqlDatColumnLayout>, GraphqlDatError> {
+        column_layouts_from_graphql_table(self.table(table_name)?)
     }
 
-    pub fn column_names(&self, table_name: &str) -> Result<Vec<String>, DatTableError> {
+    pub fn column_names(&self, table_name: &str) -> Result<Vec<String>, GraphqlDatError> {
         Ok(self
-            .headers(table_name)?
+            .column_layouts(table_name)?
             .into_iter()
             .map(|header| header.name)
             .collect())
     }
 
-    pub fn readable_column_names(&self, table_name: &str) -> Result<Vec<String>, DatTableError> {
+    pub fn readable_column_names(&self, table_name: &str) -> Result<Vec<String>, GraphqlDatError> {
         Ok(self
-            .headers(table_name)?
+            .column_layouts(table_name)?
             .into_iter()
             .filter(|header| is_readable_field_type(&header.field_type))
             .map(|header| header.name)
@@ -120,30 +123,33 @@ impl DatTableReader {
         table_name: &str,
         columns: &[String],
         limit: Option<usize>,
-    ) -> Result<DatTableRows, DatTableError> {
+    ) -> Result<GraphqlDatRows, GraphqlDatError> {
         let selected_columns = if columns.is_empty() {
             self.readable_column_names(table_name)?
         } else {
             columns.to_vec()
         };
-        read_dat_table_with_headers(
+        read_graphql_dat_table_with_column_layouts(
             bytes,
             table_name,
-            &self.headers(table_name)?,
+            &self.column_layouts(table_name)?,
             &selected_columns,
             limit,
         )
     }
 }
 
-pub fn parse_graphql_table(schema: &str, table_name: &str) -> Result<GraphqlTable, DatTableError> {
-    parse_graphql_schema(schema)?
+pub fn parse_graphql_dat_table(
+    schema: &str,
+    table_name: &str,
+) -> Result<GraphqlDatTable, GraphqlDatError> {
+    parse_graphql_dat_schema(schema)?
         .into_iter()
         .find(|table| table.name == table_name)
-        .ok_or_else(|| DatTableError::MissingTable(table_name.to_owned()))
+        .ok_or_else(|| GraphqlDatError::MissingTable(table_name.to_owned()))
 }
 
-pub fn parse_graphql_schema(schema: &str) -> Result<Vec<GraphqlTable>, DatTableError> {
+pub fn parse_graphql_dat_schema(schema: &str) -> Result<Vec<GraphqlDatTable>, GraphqlDatError> {
     let mut in_table = false;
     let mut table_name = String::new();
     let mut columns = Vec::new();
@@ -155,7 +161,7 @@ pub fn parse_graphql_schema(schema: &str) -> Result<Vec<GraphqlTable>, DatTableE
                 in_table = true;
                 name.clone_into(&mut table_name);
                 if line.ends_with('}') {
-                    tables.push(GraphqlTable {
+                    tables.push(GraphqlDatTable {
                         name: table_name.clone(),
                         columns: Vec::new(),
                     });
@@ -166,7 +172,7 @@ pub fn parse_graphql_schema(schema: &str) -> Result<Vec<GraphqlTable>, DatTableE
             continue;
         }
         if line == "}" {
-            tables.push(GraphqlTable {
+            tables.push(GraphqlDatTable {
                 name: table_name.clone(),
                 columns,
             });
@@ -181,22 +187,22 @@ pub fn parse_graphql_schema(schema: &str) -> Result<Vec<GraphqlTable>, DatTableE
         columns.push(parse_graphql_field(&table_name, line)?);
     }
     if in_table {
-        Err(DatTableError::UnclosedTable(table_name.clone()))
+        Err(GraphqlDatError::UnclosedTable(table_name.clone()))
     } else {
         Ok(tables)
     }
 }
 
-pub fn headers_from_graphql_table(
-    table: &GraphqlTable,
-) -> Result<Vec<DatColumnHeader>, DatTableError> {
+pub fn column_layouts_from_graphql_table(
+    table: &GraphqlDatTable,
+) -> Result<Vec<GraphqlDatColumnLayout>, GraphqlDatError> {
     let mut offset = 0;
     let mut headers = Vec::with_capacity(table.columns.len());
     let effective_names = effective_column_names(table);
     for (column, name) in table.columns.iter().zip(effective_names) {
         let field_type = field_type_for(table, column)?;
         let field_len = field_length(&field_type)?;
-        headers.push(DatColumnHeader {
+        headers.push(GraphqlDatColumnLayout {
             name,
             source_name: column.name.clone(),
             offset,
@@ -207,14 +213,14 @@ pub fn headers_from_graphql_table(
     Ok(headers)
 }
 
-pub fn read_dat_table(
+pub fn read_graphql_dat_table(
     bytes: &[u8],
     schema: &str,
     table_name: &str,
     columns: &[String],
     limit: Option<usize>,
-) -> Result<DatTableRows, DatTableError> {
-    DatTableReader::from_graphql(schema)?.read_table(bytes, table_name, columns, limit)
+) -> Result<GraphqlDatRows, GraphqlDatError> {
+    GraphqlDatSchema::parse(schema)?.read_table(bytes, table_name, columns, limit)
 }
 
 #[must_use]
@@ -225,40 +231,40 @@ pub fn table_name_from_path(path: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn read_dat_table_with_headers(
+fn read_graphql_dat_table_with_column_layouts(
     bytes: &[u8],
     table_name: &str,
-    headers: &[DatColumnHeader],
+    column_layouts: &[GraphqlDatColumnLayout],
     columns: &[String],
     limit: Option<usize>,
-) -> Result<DatTableRows, DatTableError> {
-    let selected_headers = columns
+) -> Result<GraphqlDatRows, GraphqlDatError> {
+    let selected_layouts = columns
         .iter()
         .map(|column| {
-            headers
+            column_layouts
                 .iter()
-                .find(|header| header.name == *column)
-                .ok_or_else(|| DatTableError::MissingColumn {
+                .find(|layout| layout.name == *column)
+                .ok_or_else(|| GraphqlDatError::MissingColumn {
                     table: table_name.to_owned(),
                     column: column.clone(),
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    for header in &selected_headers {
-        if !is_readable_field_type(&header.field_type) {
-            return Err(DatTableError::UnsupportedType {
-                column: header.name.clone(),
-                type_name: field_type_label(&header.field_type),
+    for layout in &selected_layouts {
+        if !is_readable_field_type(&layout.field_type) {
+            return Err(GraphqlDatError::UnsupportedType {
+                column: layout.name.clone(),
+                type_name: field_type_label(&layout.field_type),
             });
         }
     }
-    let selected_columns = selected_headers
+    let selected_columns = selected_layouts
         .iter()
-        .map(|header| DatColumn::from(*header))
+        .map(|layout| Datc64Column::from(*layout))
         .collect::<Vec<_>>();
-    let rows = read_projected_rows(bytes, &selected_columns, limit)?;
+    let rows = read_datc64_rows(bytes, &selected_columns, limit)?;
 
-    Ok(DatTableRows {
+    Ok(GraphqlDatRows {
         table_name: table_name.to_owned(),
         row_count: rows.row_count,
         row_length: rows.row_length,
@@ -280,9 +286,9 @@ fn parse_type_start(line: &str) -> Option<&str> {
         .find(|part| !part.is_empty())
 }
 
-fn parse_graphql_field(table_name: &str, line: &str) -> Result<GraphqlColumn, DatTableError> {
+fn parse_graphql_field(table_name: &str, line: &str) -> Result<GraphqlDatColumn, GraphqlDatError> {
     let Some((name, rest)) = line.split_once(':') else {
-        return Err(DatTableError::MalformedField {
+        return Err(GraphqlDatError::MalformedField {
             table: table_name.to_owned(),
             line: line.to_owned(),
         });
@@ -290,19 +296,19 @@ fn parse_graphql_field(table_name: &str, line: &str) -> Result<GraphqlColumn, Da
     let type_token = rest
         .split(|ch: char| ch.is_whitespace() || ch == '@' || ch == '#')
         .find(|part| !part.is_empty())
-        .ok_or_else(|| DatTableError::MalformedField {
+        .ok_or_else(|| GraphqlDatError::MalformedField {
             table: table_name.to_owned(),
             line: line.to_owned(),
         })?;
     let (array, type_name) = array_type(type_token);
-    Ok(GraphqlColumn {
+    Ok(GraphqlDatColumn {
         name: name.trim().to_owned(),
         type_name: type_name.to_owned(),
         array,
     })
 }
 
-fn effective_column_names(table: &GraphqlTable) -> Vec<String> {
+fn effective_column_names(table: &GraphqlDatTable) -> Vec<String> {
     let mut counts = HashMap::<String, usize>::new();
     table
         .columns
@@ -324,7 +330,7 @@ fn effective_column_names(table: &GraphqlTable) -> Vec<String> {
         .collect()
 }
 
-fn generated_column_base(column: &GraphqlColumn) -> String {
+fn generated_column_base(column: &GraphqlDatColumn) -> String {
     if column
         .type_name
         .chars()
@@ -338,9 +344,9 @@ fn generated_column_base(column: &GraphqlColumn) -> String {
 }
 
 fn field_type_for(
-    table: &GraphqlTable,
-    column: &GraphqlColumn,
-) -> Result<DatFieldType, DatTableError> {
+    table: &GraphqlDatTable,
+    column: &GraphqlDatColumn,
+) -> Result<DatFieldType, GraphqlDatError> {
     let inner = match column.type_name.as_str() {
         "bool" => DatFieldType::Bool,
         "i16" => DatFieldType::I16,
@@ -355,7 +361,7 @@ fn field_type_for(
             foreign: other != table.name,
         },
         other => {
-            return Err(DatTableError::UnsupportedType {
+            return Err(GraphqlDatError::UnsupportedType {
                 column: column.name.clone(),
                 type_name: other.to_owned(),
             });
@@ -370,16 +376,21 @@ fn field_type_for(
 
 #[cfg(test)]
 mod tests {
-    use super::{headers_from_graphql_table, parse_graphql_table, read_dat_table, DatTableReader};
-    use crate::dat_file::DatValue;
+    use super::{
+        column_layouts_from_graphql_table, parse_graphql_dat_table, read_graphql_dat_table,
+        GraphqlDatSchema,
+    };
+    use crate::datc64::DatValue;
 
     #[test]
     fn graphql_table_headers_are_stable_for_layout_tables() {
         let schema = include_str!("../../../schema/dat/_Core.gql");
-        let world_areas = parse_graphql_table(schema, "WorldAreas").expect("parse WorldAreas");
-        let world_headers = headers_from_graphql_table(&world_areas).expect("WorldAreas headers");
-        let topologies = parse_graphql_table(schema, "Topologies").expect("parse Topologies");
-        let topology_headers = headers_from_graphql_table(&topologies).expect("Topologies headers");
+        let world_areas = parse_graphql_dat_table(schema, "WorldAreas").expect("parse WorldAreas");
+        let world_headers =
+            column_layouts_from_graphql_table(&world_areas).expect("WorldAreas headers");
+        let topologies = parse_graphql_dat_table(schema, "Topologies").expect("parse Topologies");
+        let topology_headers =
+            column_layouts_from_graphql_table(&topologies).expect("Topologies headers");
 
         assert_eq!(world_headers[0].name, "Id");
         assert_eq!(world_headers[0].offset, 0);
@@ -400,7 +411,7 @@ mod tests {
             }
         ";
         let bytes = synthetic_world_areas_datc64();
-        let rows = read_dat_table(
+        let rows = read_graphql_dat_table(
             &bytes,
             schema,
             "WorldAreas",
@@ -461,7 +472,7 @@ mod tests {
               _: [_]
             }
         ";
-        let reader = DatTableReader::from_graphql(schema).expect("parse schema");
+        let reader = GraphqlDatSchema::parse(schema).expect("parse schema");
         let columns = reader.column_names("Example").expect("column names");
         let readable = reader
             .readable_column_names("Example")
@@ -502,7 +513,7 @@ mod tests {
               Connections_WorldAreasKeys: [WorldAreas]
             }
         ";
-        let reader = DatTableReader::from_graphql(schema).expect("parse schema");
+        let reader = GraphqlDatSchema::parse(schema).expect("parse schema");
         let bytes = synthetic_world_areas_datc64();
         let rows = reader
             .read_table(&bytes, "WorldAreas", &["Id".to_owned()], Some(1))

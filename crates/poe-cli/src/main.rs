@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use poe_ggpk::{
     default_cache_root, fetch_latest_patch_versions, parse_bundle_header, parse_index_bundle,
     root_directories, table_name_from_path, unpack_path_reps, CacheMode, DatSchemaClient,
-    DatTableReader, DiskCache, PatchCdnSource, PoeGame, DEFAULT_DAT_SCHEMA_URL,
+    DiskCache, GraphqlDatSchema, PatchCdnSource, PoeGame, DEFAULT_DAT_SCHEMA_URL,
 };
 
 const DEFAULT_DAT_SCHEMA_PATH: &str = "schema/dat/_Core.gql";
@@ -748,7 +748,7 @@ fn inspect_dat_table(
     let bytes = std::fs::read(input).with_context(|| format!("read {}", input.display()))?;
     let schema =
         std::fs::read_to_string(schema).with_context(|| format!("read {}", schema.display()))?;
-    let reader = DatTableReader::from_graphql(&schema).context("parse dat schema")?;
+    let reader = GraphqlDatSchema::parse(&schema).context("parse dat schema")?;
     let columns = if all_columns {
         if !columns.is_empty() {
             anyhow::bail!("--all-columns cannot be combined with --column");

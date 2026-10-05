@@ -11,6 +11,8 @@ poe-cli
      -> patch CDN source
      -> disk cache
      -> bundle/index parsers
+     -> datc64 binary reader
+     -> GraphQL dat schema interpreter
   -> scripts/ooz-decompress-bundle.mjs
      -> ooz-wasm
 ```
@@ -22,6 +24,24 @@ poe-cli
   fetch clients such as `DatSchemaClient`.
 - `scripts/ooz-decompress-bundle.mjs` is the temporary Oodle bridge. It should
   stay thin: read bundle bytes, decode chunks with `ooz-wasm`, write bytes.
+
+## `poe-ggpk` Source Layout
+
+```text
+bundle.rs             bundle header/decompression primitives
+cache.rs              shared disk cache, manifests, verification, clearing
+dat_schema_client.rs  fetch/update checked-in GraphQL dat schema snapshots
+datc64.rs             generic .datc64 binary reader
+dat_graphql.rs        GraphQL schema interpreter for named dat tables/columns
+ggpk.rs               low-level GGPK record scanning primitives
+index_bundle.rs       Bundles2 index parsing, path reps, path hashing
+patchcdn.rs           version resolution and patch CDN fetch orchestration
+```
+
+The dependency direction should stay one-way: `dat_graphql` may depend on
+`datc64`, but `datc64` must not know about GraphQL or specific tables. The
+future layout scraper should depend on `GraphqlDatSchema` for table reads and
+add PoE-layout semantics outside these generic readers.
 
 ## Milestone 1 Outcome: Parser Input Foundation
 
@@ -42,10 +62,10 @@ Delivered outcomes:
 - GraphQL dat schema fetching from `poe-tool-dev/dat-schema`, validation, and a
   checked-in schema snapshot.
 - Two-layer table reading:
-  - `dat_file` is the generic PoE file reader for `.datc64` envelopes, primitive
+  - `datc64` is the generic PoE file reader for `.datc64` envelopes, primitive
     field layouts, UTF-16 strings, row keys, arrays, and projected rows.
-  - `dat_table` is the schema-specific layer for GraphQL table definitions,
-    effective column names, table headers, and named projections.
+  - `dat_graphql` is the schema-specific layer for GraphQL table definitions,
+    effective column names, column layouts, and named projections.
 - CLI inspection commands for the above flows.
 - Rust tests and live-current table validation for the initial layout-critical
   tables.
@@ -130,21 +150,21 @@ paths when listing or extracting files.
 ```text
 inspect-dat-table
   -> read schema/dat/_Core.gql
-  -> DatTableReader parses schema tables once
-  -> dat_table maps GraphQL columns to generic dat_file columns
+  -> GraphqlDatSchema parses schema tables once
+  -> dat_graphql maps GraphQL columns to generic datc64 columns
   -> parse local .datc64 fixed/variable sections
-  -> dat_file decodes primitive values and projected rows
+  -> datc64 decodes primitive values and projected rows
   -> generate stable names for anonymous schema fields
   -> project requested columns or all effective columns
   -> print rows as JSON
 ```
 
 The reader currently targets `.datc64`, which is enough for `WorldAreas` and
-`Topologies`. Generic binary reading is isolated in `dat_file`; GraphQL schema
-interpretation is isolated in `dat_table`. The library boundary for table-aware
-scrape/build code is `DatTableReader`: construct it once from the checked-in
-GraphQL schema, then reuse it across raw table files after extracting them from
-the patch CDN.
+`Topologies`. Generic binary reading is isolated in `datc64`; GraphQL schema
+interpretation is isolated in `dat_graphql`. The library boundary for
+table-aware scrape/build code is `GraphqlDatSchema`: construct it once from the
+checked-in GraphQL schema, then reuse it across raw table files after extracting
+them from the patch CDN.
 
 ## Offline Flow
 

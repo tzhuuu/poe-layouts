@@ -1,8 +1,8 @@
 pub mod bundle;
 pub mod cache;
-pub mod dat_file;
-pub mod dat_schema;
-pub mod dat_table;
+pub mod dat_graphql;
+pub mod dat_schema_client;
+pub mod datc64;
 pub mod ggpk;
 pub mod index_bundle;
 pub mod patchcdn;
@@ -15,18 +15,18 @@ pub use cache::{
     CacheClearReport, CacheError, CacheFetch, CacheManifest, CacheManifestEntry, CacheMode,
     CacheVerification, DiskCache,
 };
-pub use dat_file::{
-    field_length, field_type_label, is_readable_field_type, parse_datc64, read_projected_rows,
-    DatColumn, DatFieldType, DatFile, DatFileError, DatRow, DatRows, DatValue,
+pub use dat_graphql::{
+    column_layouts_from_graphql_table, parse_graphql_dat_schema, parse_graphql_dat_table,
+    read_graphql_dat_table, table_name_from_path, GraphqlDatColumn, GraphqlDatColumnLayout,
+    GraphqlDatError, GraphqlDatRows, GraphqlDatSchema, GraphqlDatTable,
 };
-pub use dat_schema::{
+pub use dat_schema_client::{
     contains_graphql_type, validate_required_types, DatSchemaClient, DatSchemaError,
     DatSchemaSnapshotManifest, DEFAULT_DAT_SCHEMA_CACHE_KEY, DEFAULT_DAT_SCHEMA_URL,
 };
-pub use dat_table::{
-    headers_from_graphql_table, parse_graphql_schema, parse_graphql_table, read_dat_table,
-    table_name_from_path, DatColumnHeader, DatTableError, DatTableReader, DatTableRows,
-    GraphqlColumn, GraphqlTable,
+pub use datc64::{
+    field_length, field_type_label, is_readable_field_type, parse_datc64, read_datc64_rows,
+    DatFieldType, DatRow, DatValue, Datc64Column, Datc64Error, Datc64File, Datc64Rows,
 };
 pub use ggpk::{GgpkError, RecordHeader, RecordTag};
 pub use index_bundle::{
