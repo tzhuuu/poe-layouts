@@ -261,6 +261,12 @@ dd {
   justify-content: space-between;
 }
 
+.pipelineToggles {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .pipelinePane header span,
 .pipelinePane label span {
   color: #59675f;
@@ -268,7 +274,7 @@ dd {
   font-weight: 750;
 }
 
-.pipelinePane header label {
+.pipelineToggles label {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -328,7 +334,7 @@ dd {
 
 .pipelineButtons {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .pipelineButtons button {

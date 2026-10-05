@@ -102,15 +102,19 @@ duplicating campaign scrape behavior.
 React Scrape tab
   -> Tauri command
   -> poe-ggpk cache / patch CDN API
+  -> poe-layouts-core scrape API
   -> .poe-layouts/cache
+  -> .poe-layouts/raw/campaign-acts-1-5
+  -> app/public/data/layouts.bin
   -> command result rendered inline
 ```
 
 The app's Scrape tab supports manual latest-version lookup, named bundle
-prefetch, and cache clear preview/removal. This is deliberately the same layer
-as the CLI `prefetch-bundles` and `clear-cache` commands, so manual UI-driven
-cache work and scripted pipeline work share cache keys, release-line semantics,
-and clear reports.
+prefetch, cache clear preview/removal, and local Acts 1-5 scrape runs. This is
+deliberately the same layer as the CLI `prefetch-bundles`, `clear-cache`, and
+`scrape-campaign-acts-1-5` commands, so manual UI-driven work and scripted
+pipeline work share cache keys, release-line semantics, manifests, and app
+artifacts.
 
 ## Milestone 1 Outcome: Parser Input Foundation
 

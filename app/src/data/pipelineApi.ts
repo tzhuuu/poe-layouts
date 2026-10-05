@@ -28,6 +28,19 @@ export type CacheClearReport = {
   byte_len: number;
 };
 
+export type ScrapeCampaignSummary = {
+  scope: string;
+  patchVersion: string;
+  releaseLine: string;
+  manifestPath: string;
+  layoutDbPath?: string;
+  selectedAreas: number;
+  candidateFiles: number;
+  extractedFiles: number;
+  missingFiles: number;
+  warnings: string[];
+};
+
 export type PrefetchBundlesRequest = {
   patchVersion?: string;
   bundles: string[];
@@ -38,6 +51,12 @@ export type ClearCacheRequest = {
   releaseLine?: string;
   patchVersion?: string;
   dryRun: boolean;
+};
+
+export type ScrapeCampaignRequest = {
+  patchVersion?: string;
+  refresh: boolean;
+  offline: boolean;
 };
 
 export async function latestPatchVersions(): Promise<LatestPatchVersions> {
@@ -54,4 +73,10 @@ export async function clearCache(
   request: ClearCacheRequest,
 ): Promise<CacheClearReport> {
   return invoke<CacheClearReport>("clear_cache", { request });
+}
+
+export async function scrapeCampaignActsOneToFive(
+  request: ScrapeCampaignRequest,
+): Promise<ScrapeCampaignSummary> {
+  return invoke<ScrapeCampaignSummary>("scrape_campaign_acts_1_5", { request });
 }

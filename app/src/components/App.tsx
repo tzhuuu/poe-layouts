@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { TerrainFileStatus } from "../generated/poe-layouts/terrain-file-status";
 import {
   loadLayoutData,
@@ -13,8 +13,10 @@ import {
   clearCache,
   latestPatchVersions,
   prefetchBundles,
+  scrapeCampaignActsOneToFive,
   type CacheClearReport,
   type CacheManifest,
+  type ScrapeCampaignSummary,
 } from "../data/pipelineApi";
 import { PixiLayoutPreview } from "../render/PixiLayoutPreview";
 
@@ -31,28 +33,25 @@ export function App() {
   const [query, setQuery] = useState("");
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    loadLayoutData()
-      .then((data) => {
-        if (cancelled) {
-          return;
-        }
-        setLoadState({ status: "ready", data });
-        setSelectedZoneId(data.zones[0]?.id ?? null);
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setLoadState({
-            status: "error",
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
+  const reloadLayoutData = useCallback(async () => {
+    const data = await loadLayoutData();
+    setLoadState({ status: "ready", data });
+    setSelectedZoneId((currentZoneId) =>
+      currentZoneId && data.zones.some((zone) => zone.id === currentZoneId)
+        ? currentZoneId
+        : data.zones[0]?.id ?? null,
+    );
+    return data;
   }, []);
+
+  useEffect(() => {
+    reloadLayoutData().catch((error: unknown) => {
+      setLoadState({
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }, [reloadLayoutData]);
 
   if (loadState.status === "loading") {
     return <main className="appShell loadingShell">Loading layout data</main>;
@@ -77,6 +76,7 @@ export function App() {
       selectedZoneId={selectedZoneId}
       onTabChange={setActiveTab}
       onQueryChange={setQuery}
+      onReloadLayoutData={reloadLayoutData}
       onSelectZone={setSelectedZoneId}
     />
   );
@@ -89,6 +89,7 @@ type LayoutExplorerProps = {
   selectedZoneId: string | null;
   onTabChange: (tab: AppTab) => void;
   onQueryChange: (query: string) => void;
+  onReloadLayoutData: () => Promise<LayoutData>;
   onSelectZone: (zoneId: string) => void;
 };
 
@@ -99,6 +100,7 @@ function LayoutExplorer({
   selectedZoneId,
   onTabChange,
   onQueryChange,
+  onReloadLayoutData,
   onSelectZone,
 }: LayoutExplorerProps) {
   const filteredZones = useMemo(
@@ -152,7 +154,11 @@ function LayoutExplorer({
             onSelectZone={onSelectZone}
           />
         ) : (
-          <ScrapePane data={data} stats={stats} />
+          <ScrapePane
+            data={data}
+            stats={stats}
+            onReloadLayoutData={onReloadLayoutData}
+          />
         )}
       </aside>
 
@@ -234,9 +240,11 @@ function ExplorerPane({
 
 function ScrapePane({
   data,
+  onReloadLayoutData,
   stats,
 }: {
   data: LayoutData;
+  onReloadLayoutData: () => Promise<LayoutData>;
   stats: ReturnType<typeof terrainStats>;
 }) {
   return (
@@ -260,7 +268,10 @@ function ScrapePane({
         </div>
       </section>
 
-      <PipelineControls defaultPatchVersion={data.gameVersion} />
+      <PipelineControls
+        defaultPatchVersion={data.gameVersion}
+        onReloadLayoutData={onReloadLayoutData}
+      />
     </section>
   );
 }
@@ -271,13 +282,20 @@ type PipelineActionState =
   | { status: "ok"; label: string; detail: string }
   | { status: "error"; label: string; detail: string };
 
-function PipelineControls({ defaultPatchVersion }: { defaultPatchVersion: string }) {
+function PipelineControls({
+  defaultPatchVersion,
+  onReloadLayoutData,
+}: {
+  defaultPatchVersion: string;
+  onReloadLayoutData: () => Promise<LayoutData>;
+}) {
   const [patchVersion, setPatchVersion] = useState(defaultPatchVersion);
   const [releaseLine, setReleaseLine] = useState("");
   const [bundlesText, setBundlesText] = useState(
     "_.index.bin\nTiny_11.bundle.bin\nTiny_51.bundle.bin",
   );
   const [refresh, setRefresh] = useState(false);
+  const [offline, setOffline] = useState(false);
   const [actionState, setActionState] = useState<PipelineActionState>({
     status: "idle",
   });
@@ -310,14 +328,24 @@ function PipelineControls({ defaultPatchVersion }: { defaultPatchVersion: string
     <section className="pipelinePane" aria-label="Pipeline controls">
       <header>
         <span>Pipeline</span>
-        <label>
-          <input
-            checked={refresh}
-            onChange={(event) => setRefresh(event.target.checked)}
-            type="checkbox"
-          />
-          Refresh
-        </label>
+        <div className="pipelineToggles">
+          <label>
+            <input
+              checked={refresh}
+              onChange={(event) => setRefresh(event.target.checked)}
+              type="checkbox"
+            />
+            Refresh
+          </label>
+          <label>
+            <input
+              checked={offline}
+              onChange={(event) => setOffline(event.target.checked)}
+              type="checkbox"
+            />
+            Cache only
+          </label>
+        </div>
       </header>
 
       <div className="pipelineGrid">
@@ -351,6 +379,26 @@ function PipelineControls({ defaultPatchVersion }: { defaultPatchVersion: string
       </label>
 
       <div className="pipelineButtons">
+        <button
+          onClick={() =>
+            runAction(
+              "Scrape",
+              async () => {
+                const result = await scrapeCampaignActsOneToFive({
+                  patchVersion,
+                  refresh,
+                  offline,
+                });
+                await onReloadLayoutData();
+                return result;
+              },
+              summarizeScrape,
+            )
+          }
+          type="button"
+        >
+          Scrape
+        </button>
         <button
           onClick={() =>
             runAction("Latest", latestPatchVersions, (result) => {
@@ -426,6 +474,10 @@ function PipelineControls({ defaultPatchVersion }: { defaultPatchVersion: string
       )}
     </section>
   );
+}
+
+function summarizeScrape(summary: ScrapeCampaignSummary) {
+  return `${summary.patchVersion}: ${summary.selectedAreas} zones, ${summary.missingFiles} missing`;
 }
 
 function summarizeManifest(manifest: CacheManifest) {
