@@ -7,7 +7,6 @@ use crate::cache::{CacheError, CacheFetch, CacheManifest, CacheMode, DiskCache};
 const BUNDLE_DIR: &str = "Bundles2";
 const INDEX_BUNDLE: &str = "_.index.bin";
 const LATEST_VERSION_URL: &str = "https://poe-versions.obsoleet.org";
-pub const SUPPORTED_POE1_RELEASE_LINE: &str = "3.29";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -102,11 +101,6 @@ impl PatchCdnSource {
     #[must_use]
     pub fn release_cache_namespace(game: PoeGame, release_line: &str) -> String {
         format!("{}/{}", game.slug(), release_line)
-    }
-
-    #[must_use]
-    pub fn poe1_supported_release_namespace() -> String {
-        Self::release_cache_namespace(PoeGame::Poe1, SUPPORTED_POE1_RELEASE_LINE)
     }
 
     #[must_use]

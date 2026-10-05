@@ -16,5 +16,5 @@ pub use index_bundle::{
 };
 pub use patchcdn::{
     default_cache_root, fetch_latest_patch_versions, GameVersion, LatestPatchVersions,
-    PatchCdnError, PatchCdnSource, PatchIndexSnapshot, PoeGame, SUPPORTED_POE1_RELEASE_LINE,
+    PatchCdnError, PatchCdnSource, PatchIndexSnapshot, PoeGame,
 };

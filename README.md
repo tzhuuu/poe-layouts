@@ -32,9 +32,8 @@ Check the current patch versions and release-line cache namespaces:
 cargo run -p poe-cli -- latest-versions
 ```
 
-The parser pipeline is intentionally scoped to PoE1 `3.29` for now. Commands
-that fetch parser inputs reject later PoE1 release lines until we explicitly
-expand the supported target.
+Commands that fetch parser inputs default to the latest PoE1 patch version from
+the version endpoint. Pass `--patch-version` when you want a reproducible target.
 
 Fetch and snapshot the current PoE1 patch index:
 
@@ -51,14 +50,13 @@ cargo run -p poe-cli -- inspect-index-header
 Use an explicit patch version when you want a reproducible target:
 
 ```sh
-cargo run -p poe-cli -- snapshot-index --patch-version 3.29.3.3
+cargo run -p poe-cli -- snapshot-index --patch-version <patch-version>
 ```
 
 Build an offline cache manifest for parser inputs:
 
 ```sh
 cargo run -p poe-cli -- prefetch-bundles \
-  --patch-version 3.29.3.3 \
   --bundle _.index.bin \
   --manifest .poe-layouts/cache-manifest.json
 ```
@@ -70,7 +68,7 @@ cargo run -p poe-cli -- verify-cache \
   --manifest .poe-layouts/cache-manifest.json
 ```
 
-Preview or clear the local PoE1 `3.29` cache namespace:
+Preview or clear the latest local PoE1 release-line cache namespace:
 
 ```sh
 cargo run -p poe-cli -- clear-cache --dry-run
@@ -80,7 +78,7 @@ cargo run -p poe-cli -- clear-cache
 Clear only one exact patch under that release line:
 
 ```sh
-cargo run -p poe-cli -- clear-cache --patch-version 3.29.3.3
+cargo run -p poe-cli -- clear-cache --patch-version <patch-version>
 ```
 
 The extractor will eventually generate the full bundle list for Acts 1-5 after

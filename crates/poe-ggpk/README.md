@@ -18,8 +18,8 @@ The cache layout mirrors the CDN path under the selected cache root:
 
 ```text
 .poe-layouts/cache/
-  poe1/3.29/patches/3.29.3.3/Bundles2/_.index.bin
-  poe1/3.29/patches/3.29.3.3/Bundles2/_.index.bin.json
+  poe1/<release-line>/patches/<patch-version>/Bundles2/_.index.bin
+  poe1/<release-line>/patches/<patch-version>/Bundles2/_.index.bin.json
 ```
 
 The parser pipeline should prefetch every bundle it needs, write a manifest,
@@ -27,7 +27,6 @@ then run later parse/build steps in offline mode against that manifest:
 
 ```sh
 cargo run -p poe-cli -- prefetch-bundles \
-  --patch-version 3.29.3.3 \
   --bundle _.index.bin \
   --manifest .poe-layouts/cache-manifest.json
 
@@ -35,8 +34,9 @@ cargo run -p poe-cli -- verify-cache \
   --manifest .poe-layouts/cache-manifest.json
 ```
 
-For now, parser commands are intentionally scoped to PoE1 `3.29`. The cache can
-be previewed or cleared at the release-line namespace:
+By default, parser commands use the latest PoE1 patch version from
+`https://poe-versions.obsoleet.org`. The latest release-line cache namespace can
+be previewed or cleared with:
 
 ```sh
 cargo run -p poe-cli -- clear-cache --dry-run
@@ -46,7 +46,7 @@ cargo run -p poe-cli -- clear-cache
 Or at one exact patch version:
 
 ```sh
-cargo run -p poe-cli -- clear-cache --patch-version 3.29.3.3
+cargo run -p poe-cli -- clear-cache --patch-version <patch-version>
 ```
 
 The future extractor should produce the bundle list after resolving logical
@@ -60,7 +60,7 @@ next step before live CDN logical-path listing can be fully Rust-native.
 The live test is ignored by default because it depends on the current patch CDN:
 
 ```sh
-POE_LAYOUTS_PATCH_VERSION=3.29.3.3 \
+POE_LAYOUTS_PATCH_VERSION=<patch-version> \
   INSTA_UPDATE=always \
   cargo test -p poe-ggpk live_poe1_index_snapshot -- --ignored
 ```

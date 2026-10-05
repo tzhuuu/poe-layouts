@@ -4,7 +4,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use poe_ggpk::{
     default_cache_root, fetch_latest_patch_versions, parse_bundle_header, parse_index_bundle,
-    CacheMode, DiskCache, PatchCdnSource, PoeGame, SUPPORTED_POE1_RELEASE_LINE,
+    CacheMode, DiskCache, PatchCdnSource, PoeGame,
 };
 
 #[derive(Debug, Parser)]
@@ -20,7 +20,7 @@ enum Command {
     LatestVersions,
     /// Fetch and summarize the patch CDN bundle index.
     SnapshotIndex {
-        /// Patch CDN version such as 3.29.3.3. Defaults to the live `PoE1` version endpoint.
+        /// Patch CDN version such as x.y.z.w. Defaults to the live `PoE1` version endpoint.
         #[arg(long)]
         patch_version: Option<String>,
         /// Cache root. Defaults to .poe-layouts/cache under the current directory.
@@ -32,7 +32,7 @@ enum Command {
     },
     /// Fetch `_.index.bin` and print compressed bundle header metadata.
     InspectIndexHeader {
-        /// Patch CDN version such as 3.29.3.3. Defaults to the live `PoE1` version endpoint.
+        /// Patch CDN version such as x.y.z.w. Defaults to the live `PoE1` version endpoint.
         #[arg(long)]
         patch_version: Option<String>,
         /// Cache root. Defaults to .poe-layouts/cache under the current directory.
@@ -53,7 +53,7 @@ enum Command {
     },
     /// Prefetch named bundle files and write an offline cache manifest.
     PrefetchBundles {
-        /// Patch CDN version such as 3.29.3.3. Defaults to the live `PoE1` version endpoint.
+        /// Patch CDN version such as x.y.z.w. Defaults to the live `PoE1` version endpoint.
         #[arg(long)]
         patch_version: Option<String>,
         /// Cache root. Defaults to .poe-layouts/cache under the current directory.
@@ -86,9 +86,9 @@ enum Command {
         /// Cache root. Defaults to .poe-layouts/cache under the current directory.
         #[arg(long)]
         cache_root: Option<PathBuf>,
-        /// Release line to clear. Defaults to the currently supported `PoE1` line.
-        #[arg(long, default_value = SUPPORTED_POE1_RELEASE_LINE)]
-        release_line: String,
+        /// Release line to clear. Defaults to the latest `PoE1` release line.
+        #[arg(long)]
+        release_line: Option<String>,
         /// Clear only one exact patch version under its release line.
         #[arg(long)]
         patch_version: Option<String>,
@@ -146,7 +146,7 @@ fn main() -> anyhow::Result<()> {
             release_line,
             patch_version,
             dry_run,
-        } => clear_cache(cache_root, &release_line, patch_version, dry_run),
+        } => clear_cache(cache_root, release_line, patch_version, dry_run),
     }
 }
 
@@ -161,7 +161,6 @@ fn latest_versions() -> anyhow::Result<()> {
                 "patch_version": versions.poe,
                 "release_line": poe1.release_line(),
                 "cache_namespace": poe1.cache_namespace(),
-                "supported": poe1.release_line() == SUPPORTED_POE1_RELEASE_LINE,
             },
             "poe2": {
                 "patch_version": versions.poe2,
@@ -181,26 +180,14 @@ fn cache_from_arg(cache_root: Option<PathBuf>) -> DiskCache {
 }
 
 fn resolve_poe1_patch_version(patch_version: Option<String>) -> anyhow::Result<String> {
-    let patch_version = match patch_version {
+    Ok(match patch_version {
         Some(version) => version,
         None => {
             fetch_latest_patch_versions()
                 .context("fetch latest PoE patch versions")?
                 .poe
         }
-    };
-    ensure_supported_poe1_release(&PatchCdnSource::poe1(&patch_version))?;
-    Ok(patch_version)
-}
-
-fn ensure_supported_poe1_release(source: &PatchCdnSource) -> anyhow::Result<()> {
-    let release_line = source.release_line();
-    if release_line != SUPPORTED_POE1_RELEASE_LINE {
-        anyhow::bail!(
-            "unsupported PoE1 release line {release_line}; this pipeline currently supports only {SUPPORTED_POE1_RELEASE_LINE}"
-        );
-    }
-    Ok(())
+    })
 }
 
 fn snapshot_index(
@@ -325,26 +312,27 @@ fn verify_cache(cache_root: Option<PathBuf>, manifest_path: &Path) -> anyhow::Re
 
 fn clear_cache(
     cache_root: Option<PathBuf>,
-    release_line: &str,
+    release_line: Option<String>,
     patch_version: Option<String>,
     dry_run: bool,
 ) -> anyhow::Result<()> {
-    if release_line != SUPPORTED_POE1_RELEASE_LINE {
-        anyhow::bail!(
-            "unsupported PoE1 release line {release_line}; this pipeline currently supports only {SUPPORTED_POE1_RELEASE_LINE}"
-        );
-    }
     let cache = cache_from_arg(cache_root);
     let key = if let Some(patch_version) = patch_version {
         let source = PatchCdnSource::poe1(patch_version);
-        ensure_supported_poe1_release(&source)?;
         format!(
             "{}/patches/{}",
             source.cache_namespace(),
             source.patch_version
         )
     } else {
-        PatchCdnSource::release_cache_namespace(PoeGame::Poe1, release_line)
+        let release_line = match release_line {
+            Some(release_line) => release_line,
+            None => fetch_latest_patch_versions()
+                .context("fetch latest PoE patch versions")?
+                .poe1_source()
+                .release_line(),
+        };
+        PatchCdnSource::release_cache_namespace(PoeGame::Poe1, &release_line)
     };
     let report = if dry_run {
         cache.preview_clear_key(&key)?

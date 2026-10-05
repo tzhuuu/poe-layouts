@@ -245,8 +245,8 @@ impl DiskCache {
 
     /// Remove the cache subtree identified by `key`.
     ///
-    /// This is intended for namespace-style keys such as `poe1/3.29`, but also
-    /// works for an individual cached file key.
+    /// This is intended for namespace-style keys such as a `PoE` release-line
+    /// namespace, but also works for an individual cached file key.
     ///
     /// # Errors
     ///
