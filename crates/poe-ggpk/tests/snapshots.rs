@@ -125,11 +125,15 @@ fn decompressed_index_bundle_parse_and_lookup_are_stable() {
 
 #[test]
 fn hydrated_index_bundle_double_unpack_is_stable() {
-    let path_reps_bundle = stored_bundle(&[b"path-reps-placeholder".as_slice()], 64);
+    let path_reps_bundle = stored_bundle(&[synthetic_path_reps().as_slice()], 1024);
     let index_payload = synthetic_index_bundle_with_path_reps(&path_reps_bundle);
     let outer_bundle = stored_bundle(&[index_payload.as_slice()], 65_536);
     let mut decoder = StoredBundleDecoder;
     let hydrated = hydrate_index_bundle(&outer_bundle, &mut decoder).expect("hydrate index bundle");
+    let logical_paths = hydrated
+        .logical_paths()
+        .expect("unpack hydrated logical paths");
+    let root_directories = poe_ggpk::root_directories(&logical_paths);
     let world_areas = hydrated
         .index
         .file_location("Metadata/WorldAreas.datc64")
@@ -140,7 +144,8 @@ fn hydrated_index_bundle_double_unpack_is_stable() {
         "hydrated_index_bundle",
         serde_json::json!({
             "summary": hydrated.index.summary(),
-            "path_reps": String::from_utf8(hydrated.path_reps).expect("test utf-8"),
+            "logical_paths": logical_paths,
+            "root_directories": root_directories,
             "world_areas": world_areas,
         })
     );
@@ -344,6 +349,28 @@ fn push_directory(
 
 fn push_i32(bytes: &mut Vec<u8>, value: i32) {
     bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn synthetic_path_reps() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    push_path_rep_toggle(&mut bytes);
+    push_path_rep(&mut bytes, 0, "Metadata/");
+    push_path_rep(&mut bytes, 0, "Data/");
+    push_path_rep_toggle(&mut bytes);
+    push_path_rep(&mut bytes, 1, "WorldAreas.datc64");
+    push_path_rep(&mut bytes, 1, "Terrain/Act1/Area.tsi");
+    push_path_rep(&mut bytes, 2, "BaseItemTypes.datc64");
+    bytes
+}
+
+fn push_path_rep_toggle(bytes: &mut Vec<u8>) {
+    push_i32(bytes, 0);
+}
+
+fn push_path_rep(bytes: &mut Vec<u8>, base_rep_index: i32, suffix: &str) {
+    push_i32(bytes, base_rep_index + 1);
+    bytes.extend_from_slice(suffix.as_bytes());
+    bytes.push(0);
 }
 
 fn file_for_snapshot(entry: &poe_ggpk::FileIndexEntry) -> serde_json::Value {

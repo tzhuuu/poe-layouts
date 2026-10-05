@@ -61,6 +61,16 @@ pub enum IndexBundleError {
     InvalidBundleIndex { bundle_index: u32 },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum PathRepsError {
+    #[error("path reps ended early: need at least {needed} bytes, found {actual}")]
+    UnexpectedEof { needed: usize, actual: usize },
+    #[error("path reps string at offset {offset} is missing a null terminator")]
+    MissingNull { offset: usize },
+    #[error("path reps contains invalid utf-8: {0}")]
+    InvalidUtf8(#[from] Utf8Error),
+}
+
 const U32_SIZE: usize = 4;
 const I32_SIZE: usize = 4;
 const U64_SIZE: usize = 8;
@@ -185,6 +195,18 @@ impl IndexBundle {
     }
 }
 
+impl HydratedIndexBundle {
+    /// Expand decompressed path reps into logical file paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PathRepsError`] when path reps are truncated or contain invalid
+    /// strings.
+    pub fn logical_paths(&self) -> Result<Vec<String>, PathRepsError> {
+        unpack_path_reps(&self.path_reps)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct IndexBundleSummary {
     pub bundles: usize,
@@ -231,6 +253,92 @@ pub fn murmur64a(data: &[u8]) -> u64 {
     hash = hash.wrapping_mul(M);
     hash ^= hash >> R;
     hash
+}
+
+/// Unpack a decompressed path reps payload into logical file paths.
+///
+/// # Errors
+///
+/// Returns [`PathRepsError`] when path reps are truncated or contain invalid
+/// strings.
+pub fn unpack_path_reps(data: &[u8]) -> Result<Vec<String>, PathRepsError> {
+    let mut offset = 0usize;
+    let mut base_mode = false;
+    let mut bases: Vec<String> = Vec::new();
+    let mut paths = Vec::new();
+
+    while offset <= data.len().saturating_sub(I32_SIZE) {
+        let idx = read_i32_path_rep(data, &mut offset)? - 1;
+        if idx == -1 {
+            base_mode = !base_mode;
+            if base_mode {
+                bases.clear();
+            }
+            continue;
+        }
+
+        let string_offset = offset;
+        let Some(null_offset) = data[string_offset..]
+            .iter()
+            .position(|byte| *byte == 0)
+            .map(|relative| string_offset + relative)
+        else {
+            return Err(PathRepsError::MissingNull {
+                offset: string_offset,
+            });
+        };
+        let mut path = std::str::from_utf8(&data[string_offset..null_offset])?.to_owned();
+        offset = null_offset + 1;
+
+        if let Ok(base_index) = usize::try_from(idx) {
+            if let Some(base) = bases.get(base_index) {
+                path = format!("{base}{path}");
+            }
+        }
+
+        if base_mode {
+            bases.push(path);
+        } else {
+            paths.push(path);
+        }
+    }
+
+    Ok(paths)
+}
+
+#[must_use]
+pub fn root_directories(paths: &[String]) -> Vec<String> {
+    let mut roots = paths
+        .iter()
+        .filter_map(|path| path.split('/').next())
+        .filter(|root| !root.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn read_i32_path_rep(data: &[u8], offset: &mut usize) -> Result<i32, PathRepsError> {
+    let end = offset
+        .checked_add(I32_SIZE)
+        .ok_or(PathRepsError::UnexpectedEof {
+            needed: usize::MAX,
+            actual: data.len(),
+        })?;
+    if data.len() < end {
+        return Err(PathRepsError::UnexpectedEof {
+            needed: end,
+            actual: data.len(),
+        });
+    }
+    let value = i32::from_le_bytes(
+        data[*offset..end]
+            .try_into()
+            .expect("path rep slice length checked"),
+    );
+    *offset = end;
+    Ok(value)
 }
 
 fn read_count(

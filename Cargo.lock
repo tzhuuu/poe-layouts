@@ -2517,6 +2517,7 @@ dependencies = [
  "clap",
  "poe-ggpk",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

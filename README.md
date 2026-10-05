@@ -47,6 +47,14 @@ Inspect the compressed bundle header for `_.index.bin`:
 cargo run -p poe-cli -- inspect-index-header
 ```
 
+Fetch, decompress, and parse the live index using the temporary `ooz-wasm`
+bridge:
+
+```sh
+cargo run -p poe-cli -- inspect-index --prefix metadata/terrain/ --limit 10
+cargo run -p poe-cli -- inspect-index --logical-path data/worldareas.datc64
+```
+
 Use an explicit patch version when you want a reproducible target:
 
 ```sh
@@ -85,9 +93,9 @@ The extractor will eventually generate the full bundle list for Acts 1-5 after
 reading `_.index.bin`. The cache layer is already shaped so that parse/build
 steps can require all inputs to exist locally before they start.
 
-The Rust index parser currently expects already-decompressed `_.index.bin`
-payload bytes. Oodle decompression is the next bridge before the CLI can list
-logical paths directly from the live CDN index.
+The `inspect-index` command currently uses a small Node.js `ooz-wasm` bridge for
+Oodle chunks. Rust owns the bundle/index orchestration and parsing around that
+bridge.
 
 Downloaded bundle files live under `.poe-layouts/cache` by default. The live CDN
 snapshot test is ignored in normal test runs; refresh it with:

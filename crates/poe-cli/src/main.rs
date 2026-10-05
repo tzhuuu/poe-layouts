@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use poe_ggpk::{
     default_cache_root, fetch_latest_patch_versions, parse_bundle_header, parse_index_bundle,
-    CacheMode, DiskCache, PatchCdnSource, PoeGame,
+    root_directories, unpack_path_reps, CacheMode, DiskCache, PatchCdnSource, PoeGame,
 };
 
 #[derive(Debug, Parser)]
@@ -41,6 +42,33 @@ enum Command {
         /// Read from cache only and fail on cache miss.
         #[arg(long)]
         offline: bool,
+    },
+    /// Fetch, decompress, and parse the live `_.index.bin` bundle.
+    InspectIndex {
+        /// Patch CDN version such as x.y.z.w. Defaults to the live `PoE1` version endpoint.
+        #[arg(long)]
+        patch_version: Option<String>,
+        /// Cache root. Defaults to .poe-layouts/cache under the current directory.
+        #[arg(long)]
+        cache_root: Option<PathBuf>,
+        /// Read from cache only and fail on cache miss.
+        #[arg(long)]
+        offline: bool,
+        /// Optional logical path to resolve inside the index.
+        #[arg(long)]
+        logical_path: Option<String>,
+        /// Optional prefix for sampling unpacked logical paths.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Maximum number of prefix sample paths to print.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Node.js executable used for the temporary `ooz-wasm` bridge.
+        #[arg(long, default_value = "node")]
+        node: PathBuf,
+        /// Bridge script used to decompress Oodle bundle files.
+        #[arg(long)]
+        ooz_script: Option<PathBuf>,
     },
     /// Parse an already-decompressed `_.index.bin` payload.
     InspectDecompressedIndex {
@@ -118,6 +146,25 @@ fn main() -> anyhow::Result<()> {
             cache_root,
             offline,
         } => inspect_index_header(patch_version, cache_root, offline),
+        Command::InspectIndex {
+            patch_version,
+            cache_root,
+            offline,
+            logical_path,
+            prefix,
+            limit,
+            node,
+            ooz_script,
+        } => inspect_index(InspectIndexOptions {
+            patch_version,
+            cache_root,
+            offline,
+            logical_path: logical_path.as_deref(),
+            prefix: prefix.as_deref(),
+            limit,
+            node: &node,
+            ooz_script: ooz_script.as_deref(),
+        }),
         Command::InspectDecompressedIndex {
             input,
             logical_path,
@@ -239,6 +286,98 @@ fn inspect_index_header(
     Ok(())
 }
 
+struct InspectIndexOptions<'a> {
+    patch_version: Option<String>,
+    cache_root: Option<PathBuf>,
+    offline: bool,
+    logical_path: Option<&'a str>,
+    prefix: Option<&'a str>,
+    limit: usize,
+    node: &'a Path,
+    ooz_script: Option<&'a Path>,
+}
+
+fn inspect_index(options: InspectIndexOptions<'_>) -> anyhow::Result<()> {
+    let patch_version = resolve_poe1_patch_version(options.patch_version)?;
+    let cache = cache_from_arg(options.cache_root);
+    let source = PatchCdnSource::poe1(patch_version);
+    let fetch = source
+        .fetch_index(&cache, cache_mode(options.offline))
+        .context("fetch patch CDN index")?;
+
+    let temp = tempfile::tempdir().context("create temporary index decompression directory")?;
+    let decompressed_index_path = temp.path().join("index.bin");
+    let script = options
+        .ooz_script
+        .map_or_else(default_ooz_script, Path::to_path_buf);
+    run_ooz_bridge(options.node, &script, &fetch.path, &decompressed_index_path)
+        .context("decompress patch CDN index bundle")?;
+
+    let index_bytes = std::fs::read(&decompressed_index_path)
+        .with_context(|| format!("read {}", decompressed_index_path.display()))?;
+    let index = parse_index_bundle(&index_bytes).context("parse decompressed index bundle")?;
+
+    let path_reps_bundle_path = temp.path().join("path-reps.bundle.bin");
+    let path_reps_path = temp.path().join("path-reps.bin");
+    std::fs::write(&path_reps_bundle_path, &index.path_reps_bundle)
+        .with_context(|| format!("write {}", path_reps_bundle_path.display()))?;
+    run_ooz_bridge(
+        options.node,
+        &script,
+        &path_reps_bundle_path,
+        &path_reps_path,
+    )
+    .context("decompress nested path reps bundle")?;
+    let path_reps = std::fs::read(&path_reps_path)
+        .with_context(|| format!("read {}", path_reps_path.display()))?;
+    let logical_paths = unpack_path_reps(&path_reps).context("unpack path reps")?;
+    let root_dirs = root_directories(&logical_paths);
+    let prefix_matches = options.prefix.map(|prefix| {
+        logical_paths
+            .iter()
+            .filter(|path| path.starts_with(prefix))
+            .take(options.limit)
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+
+    let location = options
+        .logical_path
+        .map(|path| index.file_location(path).map(|location| (path, location)))
+        .transpose()?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "patch_version": source.patch_version,
+            "release_line": source.release_line(),
+            "cache_namespace": source.cache_namespace(),
+            "index": {
+                "key": fetch.key,
+                "path": fetch.path,
+                "source": fetch.source,
+                "byte_len": fetch.byte_len,
+                "blake3": fetch.blake3,
+            },
+            "summary": index.summary(),
+            "path_reps": {
+                "byte_len": path_reps.len(),
+                "logical_path_count": logical_paths.len(),
+                "root_directories": root_dirs,
+            },
+            "prefix_sample": prefix_matches.map(|paths| serde_json::json!({
+                "prefix": options.prefix,
+                "limit": options.limit,
+                "paths": paths,
+            })),
+            "lookup": location.map(|(path, location)| serde_json::json!({
+                "logical_path": path,
+                "location": location,
+            })),
+        }))?
+    );
+    Ok(())
+}
+
 fn inspect_decompressed_index(input: &Path, logical_path: Option<&str>) -> anyhow::Result<()> {
     let bytes = std::fs::read(input).with_context(|| format!("read {}", input.display()))?;
     let index = parse_index_bundle(&bytes).context("parse decompressed index bundle")?;
@@ -256,6 +395,32 @@ fn inspect_decompressed_index(input: &Path, logical_path: Option<&str>) -> anyho
             })),
         }))?
     );
+    Ok(())
+}
+
+fn default_ooz_script() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("scripts")
+        .join("ooz-decompress-bundle.mjs")
+}
+
+fn run_ooz_bridge(node: &Path, script: &Path, input: &Path, output: &Path) -> anyhow::Result<()> {
+    let output_status = ProcessCommand::new(node)
+        .arg(script)
+        .arg(input)
+        .arg(output)
+        .output()
+        .with_context(|| format!("run {} {}", node.display(), script.display()))?;
+    if !output_status.status.success() {
+        anyhow::bail!(
+            "ooz bridge failed with status {}\nstdout:\n{}\nstderr:\n{}",
+            output_status.status,
+            String::from_utf8_lossy(&output_status.stdout),
+            String::from_utf8_lossy(&output_status.stderr)
+        );
+    }
     Ok(())
 }
 

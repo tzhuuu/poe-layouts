@@ -7,6 +7,7 @@ This crate is intentionally narrow for the first parser milestone:
 - build stable PoE patch CDN URLs for PoE1 and PoE2
 - inspect compressed bundle headers
 - parse decompressed `Bundles2/_.index.bin` structures
+- unpack decompressed path reps into logical paths
 - resolve logical file paths to bundle slices from a decompressed index
 - fetch patch CDN bundle files through a disk cache
 - record cache metadata next to downloaded files
@@ -53,9 +54,9 @@ The future extractor should produce the bundle list after resolving logical
 files from `_.index.bin`; this crate already provides the offline cache contract
 that step will use.
 
-The index parser intentionally stops at decompressed index bytes. The current JS
-toolchain uses Oodle via `ooz-wasm`; porting or wrapping decompression is the
-next step before live CDN logical-path listing can be fully Rust-native.
+The reusable Rust crate owns bundle/index orchestration and parsing. The CLI
+currently uses a small Node.js `ooz-wasm` bridge for Oodle chunk decompression;
+porting that decoder to a native Rust implementation remains a future cleanup.
 
 The live test is ignored by default because it depends on the current patch CDN:
 

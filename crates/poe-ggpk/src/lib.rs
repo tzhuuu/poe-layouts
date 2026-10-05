@@ -14,9 +14,9 @@ pub use cache::{
 };
 pub use ggpk::{GgpkError, RecordHeader, RecordTag};
 pub use index_bundle::{
-    hydrate_index_bundle, murmur64a, murmur64a_lower, parse_index_bundle, BundleIndexEntry,
-    DirectoryIndexEntry, FileIndexEntry, HydratedIndexBundle, IndexBundle, IndexBundleError,
-    IndexBundleSummary, LogicalFileLocation,
+    hydrate_index_bundle, murmur64a, murmur64a_lower, parse_index_bundle, root_directories,
+    unpack_path_reps, BundleIndexEntry, DirectoryIndexEntry, FileIndexEntry, HydratedIndexBundle,
+    IndexBundle, IndexBundleError, IndexBundleSummary, LogicalFileLocation, PathRepsError,
 };
 pub use patchcdn::{
     default_cache_root, fetch_latest_patch_versions, GameVersion, LatestPatchVersions,
