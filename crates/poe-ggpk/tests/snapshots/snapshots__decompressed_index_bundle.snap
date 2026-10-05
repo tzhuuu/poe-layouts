@@ -1,0 +1,37 @@
+---
+source: crates/poe-ggpk/tests/snapshots.rs
+expression: "serde_json::json!({\n    \"summary\": index.summary(), \"bundles\": index.bundles, \"files\":\n    index.files.iter().map(file_for_snapshot).collect::<Vec<_>>(),\n    \"directories\":\n    index.directories.iter().map(directory_for_snapshot).collect::<Vec<_>>(),\n    \"world_areas\": world_areas, \"area_tsi\": area_tsi, \"missing\": missing,\n})"
+---
+area_tsi:
+  bundle: Metadata/Terrain.bundle.bin
+  offset: 512
+  size: 77
+bundles:
+  - decompressed_size: 1024
+    name: Art/Textures
+  - decompressed_size: 2048
+    name: Metadata/Terrain
+directories:
+  - direct_size: 0
+    path_hash: 5e97c9114ce378d5
+    path_reps_offset: 0
+    recursive_size: 0
+files:
+  - bundle_index: 0
+    offset: 128
+    path_hash: 49dd07dd36104e33
+    size: 42
+  - bundle_index: 1
+    offset: 512
+    path_hash: 02eda44abe76887d
+    size: 77
+missing: ~
+summary:
+  bundles: 2
+  directories: 1
+  files: 2
+  path_reps_bundle_size: 21
+world_areas:
+  bundle: Art/Textures.bundle.bin
+  offset: 128
+  size: 42

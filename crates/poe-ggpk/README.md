@@ -5,6 +5,9 @@ Low-level Path of Exile archive and patch CDN access.
 This crate is intentionally narrow for the first parser milestone:
 
 - build stable PoE patch CDN URLs for PoE1 and PoE2
+- inspect compressed bundle headers
+- parse decompressed `Bundles2/_.index.bin` structures
+- resolve logical file paths to bundle slices from a decompressed index
 - fetch patch CDN bundle files through a disk cache
 - record cache metadata next to downloaded files
 - write and verify offline cache manifests for parser inputs
@@ -49,6 +52,10 @@ cargo run -p poe-cli -- clear-cache --patch-version 3.29.3.3
 The future extractor should produce the bundle list after resolving logical
 files from `_.index.bin`; this crate already provides the offline cache contract
 that step will use.
+
+The index parser intentionally stops at decompressed index bytes. The current JS
+toolchain uses Oodle via `ooz-wasm`; porting or wrapping decompression is the
+next step before live CDN logical-path listing can be fully Rust-native.
 
 The live test is ignored by default because it depends on the current patch CDN:
 

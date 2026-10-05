@@ -4,8 +4,8 @@ use std::path::Path;
 use insta::assert_yaml_snapshot;
 use poe_ggpk::ggpk::scan_record_headers;
 use poe_ggpk::{
-    fetch_latest_patch_versions, CacheManifest, CacheManifestEntry, CacheMode, DiskCache,
-    PatchCdnSource,
+    fetch_latest_patch_versions, murmur64a_lower, parse_bundle_header, parse_index_bundle,
+    CacheManifest, CacheManifestEntry, CacheMode, DiskCache, PatchCdnSource,
 };
 
 #[test]
@@ -45,6 +45,61 @@ fn synthetic_ggpk_record_scan_is_stable() {
         .collect::<Vec<_>>();
 
     assert_yaml_snapshot!("synthetic_ggpk_record_scan", records);
+}
+
+#[test]
+fn bundle_header_parse_is_stable() {
+    let mut bytes = vec![0; 60];
+    bytes[0..4].copy_from_slice(&65_536_u32.to_le_bytes());
+    bytes[36..40].copy_from_slice(&2_u32.to_le_bytes());
+    bytes[40..44].copy_from_slice(&32_768_u32.to_le_bytes());
+    bytes.extend_from_slice(&101_u32.to_le_bytes());
+    bytes.extend_from_slice(&202_u32.to_le_bytes());
+    bytes.extend_from_slice(&[1, 2, 3]);
+
+    let header = parse_bundle_header(&bytes).expect("parse synthetic bundle header");
+    assert_yaml_snapshot!("bundle_header", header_for_snapshot(&header));
+}
+
+#[test]
+fn murmur64a_path_hashes_are_stable() {
+    assert_yaml_snapshot!(
+        "murmur64a_path_hashes",
+        serde_json::json!({
+            "metadata/worldareas.datc64": format!("{:016x}", murmur64a_lower("Metadata/WorldAreas.datc64")),
+            "metadata/terrain/act1/area.tsi": format!("{:016x}", murmur64a_lower("Metadata/Terrain/Act1/Area.tsi")),
+            "metadata/terrain/act1/area.dgr": format!("{:016x}", murmur64a_lower("Metadata/Terrain/Act1/Area.dgr")),
+        })
+    );
+}
+
+#[test]
+fn decompressed_index_bundle_parse_and_lookup_are_stable() {
+    let bytes = synthetic_index_bundle();
+    let index = parse_index_bundle(&bytes).expect("parse synthetic decompressed index");
+    let world_areas = index
+        .file_location("Metadata/WorldAreas.datc64")
+        .expect("lookup world areas")
+        .expect("world areas should be present");
+    let area_tsi = index
+        .file_location("Metadata/Terrain/Act1/Area.tsi")
+        .expect("lookup area tsi")
+        .expect("area tsi should be present");
+    let missing = index
+        .file_location("Metadata/Terrain/Act1/Missing.tsi")
+        .expect("lookup missing path");
+    assert_yaml_snapshot!(
+        "decompressed_index_bundle",
+        serde_json::json!({
+            "summary": index.summary(),
+            "bundles": index.bundles,
+            "files": index.files.iter().map(file_for_snapshot).collect::<Vec<_>>(),
+            "directories": index.directories.iter().map(directory_for_snapshot).collect::<Vec<_>>(),
+            "world_areas": world_areas,
+            "area_tsi": area_tsi,
+            "missing": missing,
+        })
+    );
 }
 
 #[test]
@@ -180,6 +235,84 @@ fn report_for_snapshot(root: &Path, report: &poe_ggpk::CacheClearReport) -> serd
         "file_count": report.file_count,
         "directory_count": report.directory_count,
         "byte_len": report.byte_len,
+    })
+}
+
+fn header_for_snapshot(header: &poe_ggpk::BundleHeader) -> serde_json::Value {
+    serde_json::json!({
+        "decompressed_data_size": header.decompressed_data_size,
+        "chunk_count": header.chunk_count,
+        "compression_granularity": header.compression_granularity,
+        "chunk_sizes": header.chunk_sizes,
+        "payload_offset": header.payload_offset,
+    })
+}
+
+fn synthetic_index_bundle() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    push_i32(&mut bytes, 2);
+    push_bundle(&mut bytes, "Art/Textures", 1_024);
+    push_bundle(&mut bytes, "Metadata/Terrain", 2_048);
+
+    push_i32(&mut bytes, 2);
+    push_file(&mut bytes, "Metadata/WorldAreas.datc64", 0, 128, 42);
+    push_file(&mut bytes, "Metadata/Terrain/Act1/Area.tsi", 1, 512, 77);
+
+    push_i32(&mut bytes, 1);
+    push_directory(&mut bytes, "metadata", 0, 0, 0);
+
+    bytes.extend_from_slice(b"path-reps-placeholder");
+    bytes
+}
+
+fn push_bundle(bytes: &mut Vec<u8>, name: &str, decompressed_size: u32) {
+    push_i32(
+        bytes,
+        i32::try_from(name.len()).expect("test bundle name length fits"),
+    );
+    bytes.extend_from_slice(name.as_bytes());
+    bytes.extend_from_slice(&decompressed_size.to_le_bytes());
+}
+
+fn push_file(bytes: &mut Vec<u8>, path: &str, bundle_index: u32, offset: u32, size: u32) {
+    bytes.extend_from_slice(&murmur64a_lower(path).to_le_bytes());
+    bytes.extend_from_slice(&bundle_index.to_le_bytes());
+    bytes.extend_from_slice(&offset.to_le_bytes());
+    bytes.extend_from_slice(&size.to_le_bytes());
+}
+
+fn push_directory(
+    bytes: &mut Vec<u8>,
+    path: &str,
+    path_reps_offset: u32,
+    direct_size: u32,
+    recursive_size: u32,
+) {
+    bytes.extend_from_slice(&murmur64a_lower(path).to_le_bytes());
+    bytes.extend_from_slice(&path_reps_offset.to_le_bytes());
+    bytes.extend_from_slice(&direct_size.to_le_bytes());
+    bytes.extend_from_slice(&recursive_size.to_le_bytes());
+}
+
+fn push_i32(bytes: &mut Vec<u8>, value: i32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn file_for_snapshot(entry: &poe_ggpk::FileIndexEntry) -> serde_json::Value {
+    serde_json::json!({
+        "path_hash": format!("{:016x}", entry.path_hash),
+        "bundle_index": entry.bundle_index,
+        "offset": entry.offset,
+        "size": entry.size,
+    })
+}
+
+fn directory_for_snapshot(entry: &poe_ggpk::DirectoryIndexEntry) -> serde_json::Value {
+    serde_json::json!({
+        "path_hash": format!("{:016x}", entry.path_hash),
+        "path_reps_offset": entry.path_reps_offset,
+        "direct_size": entry.direct_size,
+        "recursive_size": entry.recursive_size,
     })
 }
 

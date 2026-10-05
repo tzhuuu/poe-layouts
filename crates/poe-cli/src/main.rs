@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use poe_ggpk::{
-    default_cache_root, fetch_latest_patch_versions, CacheMode, DiskCache, PatchCdnSource, PoeGame,
-    SUPPORTED_POE1_RELEASE_LINE,
+    default_cache_root, fetch_latest_patch_versions, parse_bundle_header, parse_index_bundle,
+    CacheMode, DiskCache, PatchCdnSource, PoeGame, SUPPORTED_POE1_RELEASE_LINE,
 };
 
 #[derive(Debug, Parser)]
@@ -29,6 +29,27 @@ enum Command {
         /// Read from cache only and fail on cache miss.
         #[arg(long)]
         offline: bool,
+    },
+    /// Fetch `_.index.bin` and print compressed bundle header metadata.
+    InspectIndexHeader {
+        /// Patch CDN version such as 3.29.3.3. Defaults to the live `PoE1` version endpoint.
+        #[arg(long)]
+        patch_version: Option<String>,
+        /// Cache root. Defaults to .poe-layouts/cache under the current directory.
+        #[arg(long)]
+        cache_root: Option<PathBuf>,
+        /// Read from cache only and fail on cache miss.
+        #[arg(long)]
+        offline: bool,
+    },
+    /// Parse an already-decompressed `_.index.bin` payload.
+    InspectDecompressedIndex {
+        /// Path to decompressed index bytes.
+        #[arg(long)]
+        input: PathBuf,
+        /// Optional logical path to resolve inside the index.
+        #[arg(long)]
+        logical_path: Option<String>,
     },
     /// Prefetch named bundle files and write an offline cache manifest.
     PrefetchBundles {
@@ -92,6 +113,15 @@ fn main() -> anyhow::Result<()> {
             cache_root,
             offline,
         } => snapshot_index(patch_version, cache_root, offline),
+        Command::InspectIndexHeader {
+            patch_version,
+            cache_root,
+            offline,
+        } => inspect_index_header(patch_version, cache_root, offline),
+        Command::InspectDecompressedIndex {
+            input,
+            logical_path,
+        } => inspect_decompressed_index(&input, logical_path.as_deref()),
         Command::PrefetchBundles {
             patch_version,
             cache_root,
@@ -185,6 +215,60 @@ fn snapshot_index(
         .snapshot_index(&cache, cache_mode(offline))
         .context("fetch patch CDN index")?;
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    Ok(())
+}
+
+fn inspect_index_header(
+    patch_version: Option<String>,
+    cache_root: Option<PathBuf>,
+    offline: bool,
+) -> anyhow::Result<()> {
+    let patch_version = resolve_poe1_patch_version(patch_version)?;
+    let cache = cache_from_arg(cache_root);
+    let source = PatchCdnSource::poe1(patch_version);
+    let fetch = source
+        .fetch_index(&cache, cache_mode(offline))
+        .context("fetch patch CDN index")?;
+    let bytes =
+        std::fs::read(&fetch.path).with_context(|| format!("read {}", fetch.path.display()))?;
+    let header = parse_bundle_header(&bytes).context("parse bundle header")?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "key": fetch.key,
+            "path": fetch.path,
+            "source": fetch.source,
+            "byte_len": fetch.byte_len,
+            "blake3": fetch.blake3,
+            "header": {
+                "decompressed_data_size": header.decompressed_data_size,
+                "chunk_count": header.chunk_count,
+                "compression_granularity": header.compression_granularity,
+                "payload_offset": header.payload_offset,
+                "compressed_payload_size": header.chunk_sizes.iter().map(|size| u64::from(*size)).sum::<u64>(),
+            },
+        }))?
+    );
+    Ok(())
+}
+
+fn inspect_decompressed_index(input: &Path, logical_path: Option<&str>) -> anyhow::Result<()> {
+    let bytes = std::fs::read(input).with_context(|| format!("read {}", input.display()))?;
+    let index = parse_index_bundle(&bytes).context("parse decompressed index bundle")?;
+    let location = logical_path
+        .map(|path| index.file_location(path).map(|location| (path, location)))
+        .transpose()?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "input": input,
+            "summary": index.summary(),
+            "lookup": location.map(|(path, location)| serde_json::json!({
+                "logical_path": path,
+                "location": location,
+            })),
+        }))?
+    );
     Ok(())
 }
 
