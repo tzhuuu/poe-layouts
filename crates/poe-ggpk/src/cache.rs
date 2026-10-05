@@ -33,6 +33,7 @@ pub enum CacheSource {
 pub enum CacheMode {
     Online,
     Offline,
+    Refresh,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -154,7 +155,7 @@ impl DiskCache {
     ) -> Result<CacheFetch, CacheError> {
         let path = self.path_for_key(key)?;
         let metadata_path = metadata_path_for(&path);
-        if path.exists() {
+        if path.exists() && mode != CacheMode::Refresh {
             let byte_len = fs::metadata(&path)
                 .map_err(|source| CacheError::Io {
                     path: path.clone(),

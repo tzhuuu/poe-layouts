@@ -107,7 +107,9 @@ cargo run -p poe-cli -- update-dat-schema
 
 That command validates that the fetched GraphQL schema includes the immediate
 scrape targets, currently `WorldAreas` and `Topologies`, then writes
-`schema/dat/_Core.gql` and `schema/dat/schema-manifest.json`.
+`schema/dat/_Core.gql` and `schema/dat/schema-manifest.json`. Unlike bundle
+commands, this refreshes from the network by default; pass `--offline` to
+rebuild the checked-in files from the local cache.
 
 The extractor will eventually generate the full bundle list for Acts 1-5 after
 reading `_.index.bin`. The cache layer is already shaped so that parse/build

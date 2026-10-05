@@ -1,5 +1,6 @@
 pub mod bundle;
 pub mod cache;
+pub mod dat_schema;
 pub mod ggpk;
 pub mod index_bundle;
 pub mod patchcdn;
@@ -11,6 +12,10 @@ pub use bundle::{
 pub use cache::{
     CacheClearReport, CacheError, CacheFetch, CacheManifest, CacheManifestEntry, CacheMode,
     CacheVerification, DiskCache,
+};
+pub use dat_schema::{
+    contains_graphql_type, validate_required_types, DatSchemaClient, DatSchemaError,
+    DatSchemaSnapshotManifest, DEFAULT_DAT_SCHEMA_CACHE_KEY, DEFAULT_DAT_SCHEMA_URL,
 };
 pub use ggpk::{GgpkError, RecordHeader, RecordTag};
 pub use index_bundle::{

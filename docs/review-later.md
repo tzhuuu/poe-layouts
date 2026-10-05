@@ -24,10 +24,14 @@ each CLI command perform ad hoc network work.
     bundle fetching.
   - This is close to a game-content client, but it is currently specific to the
     patch CDN.
+- `crates/poe-ggpk/src/dat_schema.rs`
+  - Owns `DatSchemaClient`, schema snapshot validation, and schema manifest
+    writing.
+  - This is the first milestone-2 fetch client extraction.
 - `crates/poe-cli/src/main.rs`
-  - `update-dat-schema` currently fetches the GraphQL schema directly with
-    `reqwest`.
-  - This is the bit that should move out of the CLI during the client refactor.
+  - `update-dat-schema` now delegates GraphQL schema fetching and validation to
+    `poe-ggpk`.
+  - Continue moving remote-input logic out of the CLI as the scraper grows.
 - `schema/dat/_Core.gql`
   - Checked-in schema snapshot from `poe-tool-dev/dat-schema`.
   - Confirm the `WorldAreas` and `Topologies` fields look like the tables we
@@ -92,9 +96,9 @@ The key idea: all remote inputs should share the same boring contract:
 - Should manifests be one type with a `kind` field, or separate manifest structs
   for CDN bundles, schema snapshots, and future raw scrape outputs?
 
-## Likely Next Commit
+## Likely Next Commits
 
-Before deeper `.datc64` parsing, refactor `update-dat-schema` so it calls a
-library API rather than fetching directly from `poe-cli`. That will make the
-scraper milestone cleaner because the CLI can orchestrate while the library owns
-remote inputs and cache behavior.
+- Fold more patch-CDN orchestration behind client-shaped APIs so the CLI mostly
+  wires options to library calls.
+- Start the `.datc64` table reader against the checked-in schema snapshot,
+  beginning with `WorldAreas` and `Topologies`.

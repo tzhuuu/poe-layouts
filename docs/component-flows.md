@@ -18,7 +18,8 @@ poe-cli
 - `poe-cli` is the debugging and pipeline entrypoint.
 - `poe-ggpk` owns stable Rust APIs for patch versions, cache layout, bundle
   header parsing, index parsing, path hashing, path reps unpacking, and cache
-  verification.
+  verification. It also owns source-specific fetch clients such as
+  `DatSchemaClient`.
 - `scripts/ooz-decompress-bundle.mjs` is the temporary Oodle bridge. It should
   stay thin: read bundle bytes, decode chunks with `ooz-wasm`, write bytes.
 
@@ -26,6 +27,8 @@ poe-cli
 
 ```text
 update-dat-schema
+  -> DatSchemaClient
+  -> shared disk cache
   -> poe-tool-dev/dat-schema _Core.gql
   -> validate required table types exist
   -> schema/dat/_Core.gql
@@ -35,7 +38,9 @@ update-dat-schema
 The GraphQL schema snapshot is the contract for interpreting extracted table
 files. The current scraper milestone requires at least `WorldAreas` and
 `Topologies`; future table parsing should use the checked-in snapshot by
-default and refresh it explicitly when we need upstream schema changes.
+default and refresh it explicitly when we need upstream schema changes. Schema
+refreshes force a network fetch by default; `--offline` rebuilds the checked-in
+snapshot from cached bytes.
 
 ## Version And Cache Flow
 

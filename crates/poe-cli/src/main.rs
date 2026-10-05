@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
@@ -6,11 +5,10 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use poe_ggpk::{
     default_cache_root, fetch_latest_patch_versions, parse_bundle_header, parse_index_bundle,
-    root_directories, unpack_path_reps, CacheMode, DiskCache, PatchCdnSource, PoeGame,
+    root_directories, unpack_path_reps, CacheMode, DatSchemaClient, DiskCache, PatchCdnSource,
+    PoeGame, DEFAULT_DAT_SCHEMA_URL,
 };
 
-const DEFAULT_DAT_SCHEMA_URL: &str =
-    "https://raw.githubusercontent.com/poe-tool-dev/dat-schema/main/dat-schema/_Core.gql";
 const DEFAULT_DAT_SCHEMA_PATH: &str = "schema/dat/_Core.gql";
 const DEFAULT_DAT_SCHEMA_MANIFEST_PATH: &str = "schema/dat/schema-manifest.json";
 const REQUIRED_DAT_SCHEMA_TYPES: &[&str] = &["WorldAreas", "Topologies"];
@@ -160,6 +158,12 @@ enum Command {
         /// Source URL for the schema snapshot.
         #[arg(long, default_value = DEFAULT_DAT_SCHEMA_URL)]
         url: String,
+        /// Cache root. Defaults to .poe-layouts/cache under the current directory.
+        #[arg(long)]
+        cache_root: Option<PathBuf>,
+        /// Read the schema from cache only and fail on cache miss.
+        #[arg(long)]
+        offline: bool,
         /// Output path for the fetched GraphQL schema.
         #[arg(long, default_value = DEFAULT_DAT_SCHEMA_PATH)]
         out: PathBuf,
@@ -254,7 +258,13 @@ fn main() -> anyhow::Result<()> {
             patch_version,
             dry_run,
         } => clear_cache(cache_root, release_line, patch_version, dry_run),
-        Command::UpdateDatSchema { url, out, manifest } => update_dat_schema(&url, &out, &manifest),
+        Command::UpdateDatSchema {
+            url,
+            cache_root,
+            offline,
+            out,
+            manifest,
+        } => update_dat_schema(&url, cache_root, offline, &out, &manifest),
     }
 }
 
@@ -671,64 +681,27 @@ fn clear_cache(
     Ok(())
 }
 
-fn update_dat_schema(url: &str, out: &Path, manifest_path: &Path) -> anyhow::Result<()> {
-    let response = reqwest::blocking::get(url)
-        .with_context(|| format!("fetch dat schema from {url}"))?
-        .error_for_status()
-        .with_context(|| format!("fetch dat schema from {url}"))?;
-    let bytes = response
-        .bytes()
-        .with_context(|| format!("read dat schema response from {url}"))?;
-    let schema = std::str::from_utf8(&bytes).context("dat schema is not utf-8")?;
-
-    let missing_types = REQUIRED_DAT_SCHEMA_TYPES
+fn update_dat_schema(
+    url: &str,
+    cache_root: Option<PathBuf>,
+    offline: bool,
+    out: &Path,
+    manifest_path: &Path,
+) -> anyhow::Result<()> {
+    let required_types = REQUIRED_DAT_SCHEMA_TYPES
         .iter()
-        .copied()
-        .filter(|type_name| !contains_graphql_type(schema, type_name))
+        .map(|type_name| (*type_name).to_owned())
         .collect::<Vec<_>>();
-    if !missing_types.is_empty() {
-        anyhow::bail!(
-            "dat schema is missing required types: {}",
-            missing_types.join(", ")
-        );
-    }
-
-    write_atomic(out, &bytes)?;
-    let manifest = serde_json::json!({
-        "schema_version": 1,
-        "source_url": url,
-        "schema_path": out,
-        "byte_len": bytes.len(),
-        "blake3": blake3::hash(&bytes).to_hex().to_string(),
-        "required_types": REQUIRED_DAT_SCHEMA_TYPES,
-    });
-    let manifest_bytes = format!("{}\n", serde_json::to_string_pretty(&manifest)?);
-    write_atomic(manifest_path, manifest_bytes.as_bytes())?;
-
+    let mode = if offline {
+        CacheMode::Offline
+    } else {
+        CacheMode::Refresh
+    };
+    let manifest = DatSchemaClient::new(cache_from_arg(cache_root))
+        .with_url(url)
+        .update_snapshot(out, manifest_path, &required_types, mode)
+        .context("update dat schema snapshot")?;
     println!("{}", serde_json::to_string_pretty(&manifest)?);
-    Ok(())
-}
-
-fn contains_graphql_type(schema: &str, type_name: &str) -> bool {
-    schema.lines().any(|line| {
-        let Some(rest) = line.trim_start().strip_prefix("type ") else {
-            return false;
-        };
-        rest.split(|ch: char| ch.is_whitespace() || ch == '{' || ch == '@')
-            .next()
-            == Some(type_name)
-    })
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("create temp file in {}", parent.display()))?;
-    temp.write_all(bytes)
-        .with_context(|| format!("write temp file for {}", path.display()))?;
-    temp.persist(path)
-        .with_context(|| format!("persist {}", path.display()))?;
     Ok(())
 }
 
@@ -746,27 +719,5 @@ impl From<NetworkMode> for CacheMode {
             NetworkMode::Online => Self::Online,
             NetworkMode::Offline => Self::Offline,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::contains_graphql_type;
-
-    #[test]
-    fn graphql_type_detection_handles_directives_and_braces() {
-        let schema = r"
-            type WorldAreas @table {
-              Id: string
-            }
-
-            type Topologies {
-              DGRFile: string
-            }
-        ";
-
-        assert!(contains_graphql_type(schema, "WorldAreas"));
-        assert!(contains_graphql_type(schema, "Topologies"));
-        assert!(!contains_graphql_type(schema, "Areas"));
     }
 }
