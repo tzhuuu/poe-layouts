@@ -23,6 +23,35 @@ poe-cli
 - `scripts/ooz-decompress-bundle.mjs` is the temporary Oodle bridge. It should
   stay thin: read bundle bytes, decode chunks with `ooz-wasm`, write bytes.
 
+## Milestone 1 Outcome: Parser Input Foundation
+
+Milestone 1 is achieved. The repo now has a reusable Rust foundation for getting
+current PoE1 parser inputs onto disk and reading the first table files needed by
+the Acts 1-5 scraper.
+
+Delivered outcomes:
+
+- Latest PoE1 patch resolution through the version endpoint.
+- Release-line-aware disk cache under `.poe-layouts/cache`.
+- Cache clearing, prefetch manifests, and offline verification.
+- Patch CDN bundle index fetching and header parsing.
+- Oodle bundle decompression via the temporary Node.js `ooz-wasm` bridge.
+- Decompressed index parsing, path hash lookup, and path reps unpacking.
+- Logical file extraction by path, including `data/worldareas.datc64` and
+  `data/topologies.datc64`.
+- GraphQL dat schema fetching from `poe-tool-dev/dat-schema`, validation, and a
+  checked-in schema snapshot.
+- Reusable `.datc64` table reading through `DatTableReader`, including stable
+  generated names for anonymous schema fields and broad readable-column
+  inspection.
+- CLI inspection commands for the above flows.
+- Rust tests and live-current table validation for the initial layout-critical
+  tables.
+
+The milestone intentionally does not include campaign filtering, topology
+dependency expansion, or terrain parsing. Those belong to the next milestone:
+the Acts 1-5 scrape scope.
+
 ## Table Schema Flow
 
 ```text
