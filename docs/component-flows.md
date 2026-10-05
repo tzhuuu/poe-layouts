@@ -36,12 +36,19 @@ dat_graphql.rs        GraphQL schema interpreter for named dat tables/columns
 ggpk.rs               low-level GGPK record scanning primitives
 index_bundle.rs       Bundles2 index parsing, path reps, path hashing
 patchcdn.rs           version resolution and patch CDN fetch orchestration
+patch_client.rs       high-level patch index loading and logical file extraction
 ```
 
 The dependency direction should stay one-way: `dat_graphql` may depend on
 `datc64`, but `datc64` must not know about GraphQL or specific tables. The
 future layout scraper should depend on `GraphqlDatSchema` for table reads and
 add PoE-layout semantics outside these generic readers.
+
+`PatchClient` is the higher-level file access boundary for milestone 2. It owns
+fetching cached CDN bundles, loading the decompressed index, resolving logical
+paths, and extracting logical files. The caller supplies a `BundleDecompressor`
+implementation; today the CLI implementation shells out to the temporary
+Node.js `ooz-wasm` bridge.
 
 ## Milestone 1 Outcome: Parser Input Foundation
 
@@ -134,7 +141,8 @@ bundle chunks.
 
 ```text
 extract-file --logical-path data/worldareas.datc64
-  -> load/decompress/parse _.index.bin
+  -> PatchClient loads/decompresses/parses _.index.bin
+  -> PatchClient decompresses path reps
   -> hash logical path with Murmur64A
   -> resolve bundle name, offset, size
   -> fetch/cache containing bundle
@@ -185,16 +193,44 @@ parsing when run in offline mode.
 
 ```text
 scrape campaign-acts-1-5
-  -> read schema/dat/_Core.gql
+  -> PatchClient loads index and logical paths
   -> extract data/worldareas.datc64
-  -> read WorldAreas columns
-  -> extract and read topology table/files
-  -> select Acts 1-5 campaign zones
-  -> resolve terrain graph dependencies
-  -> extract .dgr, .tsi, .arm candidates
-  -> write raw cache
-  -> write extraction manifest with missing paths and warnings
+  -> extract data/topologies.datc64
+  -> GraphqlDatSchema reads WorldAreas and Topologies
+  -> select main Acts 1-5 campaign zones by WorldAreas id prefix and act
+  -> resolve table-declared topology graph and TSI candidates
+  -> record simple .dgr/.arm path variants
+  -> extract candidates that are present and available in cache/network mode
+  -> write raw cache and manifest with missing paths/warnings
 ```
 
 The goal of this milestone is not layout modeling yet. It is to produce a
 repeatable raw corpus and manifest that the parser/model milestones can consume.
+
+Current first pass: `scrape-campaign-acts-1-5` writes
+`.poe-layouts/raw/campaign-acts-1-5/manifest.json`. In offline mode with only the
+current table bundles cached, it selects 81 main campaign areas and records
+terrain candidates as missing cache entries rather than failing the scrape.
+
+## Refactor Notes
+
+The next useful cleanup is to move the milestone-2 domain logic out of
+`poe-cli` and behind a typed layout-data API. The shape should be:
+
+```text
+PatchClient
+  -> fetch/load/extract logical files
+
+GraphqlDatSchema
+  -> read named dat tables
+
+CampaignLayoutScraper
+  -> read WorldAreas/Topologies
+  -> select campaign scope
+  -> produce raw corpus manifest
+```
+
+That future scraper layer should expose methods like `scrape_campaign_acts_1_5`
+and typed records for `WorldArea`, `Topology`, and `TerrainCandidate`. It should
+depend on `PatchClient` and `GraphqlDatSchema`, while those milestone-1 layers
+stay generic.

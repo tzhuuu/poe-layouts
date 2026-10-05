@@ -5,6 +5,7 @@ pub mod dat_schema_client;
 pub mod datc64;
 pub mod ggpk;
 pub mod index_bundle;
+pub mod patch_client;
 pub mod patchcdn;
 
 pub use bundle::{
@@ -33,6 +34,10 @@ pub use index_bundle::{
     hydrate_index_bundle, murmur64a, murmur64a_lower, parse_index_bundle, root_directories,
     unpack_path_reps, BundleIndexEntry, DirectoryIndexEntry, FileIndexEntry, HydratedIndexBundle,
     IndexBundle, IndexBundleError, IndexBundleSummary, LogicalFileLocation, PathRepsError,
+};
+pub use patch_client::{
+    BundleDecompressor, BundleSlice, ExtractedLogicalFile, PatchClient, PatchClientError,
+    PatchClientIndex,
 };
 pub use patchcdn::{
     default_cache_root, fetch_latest_patch_versions, GameVersion, LatestPatchVersions,

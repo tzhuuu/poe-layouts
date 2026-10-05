@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
@@ -5,9 +6,11 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use poe_ggpk::{
     default_cache_root, fetch_latest_patch_versions, parse_bundle_header, parse_index_bundle,
-    root_directories, table_name_from_path, unpack_path_reps, CacheMode, DatSchemaClient,
-    DiskCache, GraphqlDatSchema, PatchCdnSource, PoeGame, DEFAULT_DAT_SCHEMA_URL,
+    root_directories, table_name_from_path, unpack_path_reps, CacheMode, DatSchemaClient, DatValue,
+    DiskCache, ExtractedLogicalFile, GraphqlDatRows, GraphqlDatSchema, PatchCdnSource, PatchClient,
+    PoeGame, DEFAULT_DAT_SCHEMA_URL,
 };
+use serde::Serialize;
 
 const DEFAULT_DAT_SCHEMA_PATH: &str = "schema/dat/_Core.gql";
 const DEFAULT_DAT_SCHEMA_MANIFEST_PATH: &str = "schema/dat/schema-manifest.json";
@@ -192,6 +195,31 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         limit: usize,
     },
+    /// Build the raw Acts 1-5 campaign layout scrape cache and manifest.
+    #[command(name = "scrape-campaign-acts-1-5")]
+    ScrapeCampaignActsOneToFive {
+        /// Patch CDN version such as x.y.z.w. Defaults to the live `PoE1` version endpoint.
+        #[arg(long)]
+        patch_version: Option<String>,
+        /// Cache root. Defaults to .poe-layouts/cache under the current directory.
+        #[arg(long)]
+        cache_root: Option<PathBuf>,
+        /// Read from cache only and fail on cache miss.
+        #[arg(long)]
+        offline: bool,
+        /// GraphQL dat schema snapshot.
+        #[arg(long, default_value = DEFAULT_DAT_SCHEMA_PATH)]
+        schema: PathBuf,
+        /// Output directory for raw files and manifest.
+        #[arg(long, default_value = ".poe-layouts/raw/campaign-acts-1-5")]
+        out_dir: PathBuf,
+        /// Node.js executable used for the temporary `ooz-wasm` bridge.
+        #[arg(long, default_value = "node")]
+        node: PathBuf,
+        /// Bridge script used to decompress Oodle bundle files.
+        #[arg(long)]
+        ooz_script: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -200,6 +228,75 @@ enum NetworkMode {
     Offline,
 }
 
+#[derive(Debug, Serialize)]
+struct CampaignScrapeManifest {
+    scope: String,
+    patch_version: String,
+    release_line: String,
+    schema: PathBuf,
+    out_dir: PathBuf,
+    tables: Vec<ExtractedLogicalFile>,
+    selected_areas: Vec<CampaignAreaSummary>,
+    candidate_files: Vec<TerrainCandidate>,
+    extracted_files: Vec<ExtractedLogicalFile>,
+    missing_files: Vec<MissingTerrainCandidate>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CampaignAreaSummary {
+    row_index: usize,
+    id: String,
+    name: String,
+    act: i64,
+    is_town: bool,
+    area_level: i64,
+    topology_indices: Vec<usize>,
+    tsi_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TopologySummary {
+    row_index: usize,
+    id: String,
+    graph_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+struct TerrainCandidate {
+    logical_path: String,
+    source: String,
+    kind: TerrainCandidateKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum TerrainCandidateKind {
+    Graph,
+    Tsi,
+    DgrVariant,
+    ArmVariant,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MissingTerrainCandidate {
+    logical_path: String,
+    source: String,
+    kind: TerrainCandidateKind,
+    reason: String,
+}
+
+struct ScrapeCampaignOptions<'a> {
+    patch_version: Option<String>,
+    cache_root: Option<PathBuf>,
+    offline: bool,
+    schema: &'a Path,
+    out_dir: &'a Path,
+    node: &'a Path,
+    ooz_script: Option<&'a Path>,
+}
+
+#[allow(clippy::too_many_lines)]
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.command {
@@ -294,6 +391,23 @@ fn main() -> anyhow::Result<()> {
             all_columns,
             limit,
         } => inspect_dat_table(&input, &schema, table, columns, all_columns, limit),
+        Command::ScrapeCampaignActsOneToFive {
+            patch_version,
+            cache_root,
+            offline,
+            schema,
+            out_dir,
+            node,
+            ooz_script,
+        } => scrape_campaign_acts_one_to_five(ScrapeCampaignOptions {
+            patch_version,
+            cache_root,
+            offline,
+            schema: &schema,
+            out_dir: &out_dir,
+            node: &node,
+            ooz_script: ooz_script.as_deref(),
+        }),
     }
 }
 
@@ -522,45 +636,22 @@ fn extract_file(options: ExtractFileOptions<'_>) -> anyhow::Result<()> {
     let script = options
         .ooz_script
         .map_or_else(default_ooz_script, Path::to_path_buf);
-
-    let temp = tempfile::tempdir().context("create temporary extraction directory")?;
-    let decompressed_index_path = temp.path().join("index.bin");
-    let index_fetch = source
-        .fetch_index(&cache, cache_mode(options.offline))
-        .context("fetch patch CDN index")?;
-    run_ooz_bridge(OozBridgeInvocation {
+    let mut decompressor = NodeOozBridge {
         node: options.node,
         script: &script,
-        input: &index_fetch.path,
-        output: &decompressed_index_path,
-        slice: None,
-    })
-    .context("decompress patch CDN index bundle")?;
-
-    let index_bytes = std::fs::read(&decompressed_index_path)
-        .with_context(|| format!("read {}", decompressed_index_path.display()))?;
-    let index = parse_index_bundle(&index_bytes).context("parse decompressed index bundle")?;
-    let location = index
-        .file_location(options.logical_path)?
-        .with_context(|| format!("logical path not found in index: {}", options.logical_path))?;
-
-    let bundle_fetch = source
-        .fetch_bundle(&cache, &location.bundle, cache_mode(options.offline))
-        .with_context(|| format!("fetch bundle {}", location.bundle))?;
-    if let Some(parent) = options.out.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    run_ooz_bridge(OozBridgeInvocation {
-        node: options.node,
-        script: &script,
-        input: &bundle_fetch.path,
-        output: options.out,
-        slice: Some((
-            usize::try_from(location.offset).context("file offset does not fit usize")?,
-            usize::try_from(location.size).context("file size does not fit usize")?,
-        )),
-    })
-    .with_context(|| format!("extract {}", options.logical_path))?;
+    };
+    let client = PatchClient::new(source.clone(), cache, cache_mode(options.offline));
+    let client_index = client
+        .load_index(&mut decompressor)
+        .context("load patch CDN index")?;
+    let extracted = client
+        .extract_logical_file(
+            &client_index.index,
+            options.logical_path,
+            options.out,
+            &mut decompressor,
+        )
+        .with_context(|| format!("extract {}", options.logical_path))?;
 
     println!(
         "{}",
@@ -570,12 +661,12 @@ fn extract_file(options: ExtractFileOptions<'_>) -> anyhow::Result<()> {
             "patch_version": source.patch_version,
             "release_line": source.release_line(),
             "bundle": {
-                "name": location.bundle,
-                "offset": location.offset,
-                "size": location.size,
-                "cache_key": bundle_fetch.key,
-                "path": bundle_fetch.path,
-                "source": bundle_fetch.source,
+                "name": extracted.location.bundle,
+                "offset": extracted.location.offset,
+                "size": extracted.location.size,
+                "cache_key": extracted.cache_key,
+                "path": extracted.cache_path,
+                "source": extracted.cache_source,
             },
         }))?
     );
@@ -597,6 +688,47 @@ struct OozBridgeInvocation<'a> {
     input: &'a Path,
     output: &'a Path,
     slice: Option<(usize, usize)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NodeOozBridge<'a> {
+    node: &'a Path,
+    script: &'a Path,
+}
+
+#[derive(Debug)]
+struct NodeOozBridgeError(anyhow::Error);
+
+impl std::fmt::Display for NodeOozBridgeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
+impl std::error::Error for NodeOozBridgeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+impl poe_ggpk::BundleDecompressor for NodeOozBridge<'_> {
+    type Error = NodeOozBridgeError;
+
+    fn decompress_bundle(
+        &mut self,
+        input: &Path,
+        output: &Path,
+        slice: Option<poe_ggpk::BundleSlice>,
+    ) -> Result<(), Self::Error> {
+        run_ooz_bridge(OozBridgeInvocation {
+            node: self.node,
+            script: self.script,
+            input,
+            output,
+            slice: slice.map(|slice| (slice.offset, slice.size)),
+        })
+        .map_err(NodeOozBridgeError)
+    }
 }
 
 fn run_ooz_bridge(invocation: OozBridgeInvocation<'_>) -> anyhow::Result<()> {
@@ -764,6 +896,332 @@ fn inspect_dat_table(
         .with_context(|| format!("read dat table {table_name}"))?;
     println!("{}", serde_json::to_string_pretty(&rows)?);
     Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn scrape_campaign_acts_one_to_five(options: ScrapeCampaignOptions<'_>) -> anyhow::Result<()> {
+    let patch_version = resolve_poe1_patch_version(options.patch_version)?;
+    let cache = cache_from_arg(options.cache_root);
+    let source = PatchCdnSource::poe1(patch_version);
+    let script = options
+        .ooz_script
+        .map_or_else(default_ooz_script, Path::to_path_buf);
+    let mut decompressor = NodeOozBridge {
+        node: options.node,
+        script: &script,
+    };
+    let client = PatchClient::new(source.clone(), cache, cache_mode(options.offline));
+    let client_index = client
+        .load_index(&mut decompressor)
+        .context("load patch CDN index")?;
+    let logical_paths = client_index
+        .logical_paths
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    let files_dir = options.out_dir.join("files");
+    std::fs::create_dir_all(&files_dir)
+        .with_context(|| format!("create {}", files_dir.display()))?;
+
+    let table_paths = ["data/worldareas.datc64", "data/topologies.datc64"];
+    let mut extracted_tables = Vec::new();
+    for logical_path in table_paths {
+        let output_path = raw_output_path(&files_dir, logical_path);
+        let extracted = client
+            .extract_logical_file(
+                &client_index.index,
+                logical_path,
+                &output_path,
+                &mut decompressor,
+            )
+            .with_context(|| format!("extract table {logical_path}"))?;
+        extracted_tables.push(extracted);
+    }
+
+    let schema_text = std::fs::read_to_string(options.schema)
+        .with_context(|| format!("read {}", options.schema.display()))?;
+    let schema = GraphqlDatSchema::parse(&schema_text).context("parse dat schema")?;
+    let world_areas_bytes = std::fs::read(raw_output_path(&files_dir, "data/worldareas.datc64"))
+        .context("read extracted WorldAreas")?;
+    let topologies_bytes = std::fs::read(raw_output_path(&files_dir, "data/topologies.datc64"))
+        .context("read extracted Topologies")?;
+
+    let world_areas = schema
+        .read_table(
+            &world_areas_bytes,
+            "WorldAreas",
+            &[
+                "Id".to_owned(),
+                "Name".to_owned(),
+                "Act".to_owned(),
+                "IsTown".to_owned(),
+                "AreaLevel".to_owned(),
+                "IsMapArea".to_owned(),
+                "TopologiesKeys".to_owned(),
+                "TSIFile".to_owned(),
+            ],
+            None,
+        )
+        .context("read WorldAreas")?;
+    let topologies = schema
+        .read_table(
+            &topologies_bytes,
+            "Topologies",
+            &["Id".to_owned(), "DGRFile".to_owned()],
+            None,
+        )
+        .context("read Topologies")?;
+
+    let topology_by_index = topology_summaries(&topologies)?;
+    let selected_areas = campaign_area_summaries(&world_areas)?;
+    let mut candidates = terrain_candidates(&selected_areas, &topology_by_index);
+    candidates.sort();
+    candidates.dedup();
+
+    let mut extracted_files = Vec::new();
+    let mut missing_files = Vec::new();
+    for candidate in &candidates {
+        if logical_paths.contains(&candidate.logical_path) {
+            let output_path = raw_output_path(&files_dir, &candidate.logical_path);
+            match client.extract_logical_file(
+                &client_index.index,
+                &candidate.logical_path,
+                &output_path,
+                &mut decompressor,
+            ) {
+                Ok(extracted) => extracted_files.push(extracted),
+                Err(error) => missing_files.push(MissingTerrainCandidate {
+                    logical_path: candidate.logical_path.clone(),
+                    source: candidate.source.clone(),
+                    kind: candidate.kind,
+                    reason: error.to_string(),
+                }),
+            }
+        } else {
+            missing_files.push(MissingTerrainCandidate {
+                logical_path: candidate.logical_path.clone(),
+                source: candidate.source.clone(),
+                kind: candidate.kind,
+                reason: "not found in patch index".to_owned(),
+            });
+        }
+    }
+
+    let manifest = CampaignScrapeManifest {
+        scope: "campaign-acts-1-5".to_owned(),
+        patch_version: source.patch_version.clone(),
+        release_line: source.release_line(),
+        schema: options.schema.to_path_buf(),
+        out_dir: options.out_dir.to_path_buf(),
+        tables: extracted_tables,
+        selected_areas,
+        candidate_files: candidates,
+        extracted_files,
+        missing_files,
+        warnings: vec![
+            "This milestone only resolves table-declared graph and TSI paths plus simple .dgr/.arm path variants; deeper terrain dependencies require parsing the extracted graph files.".to_owned(),
+            "Campaign selection currently uses WorldAreas Act 1-5, excludes map areas, and skips the NULL sentinel row.".to_owned(),
+        ],
+    };
+
+    let manifest_path = options.out_dir.join("manifest.json");
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
+        .with_context(|| format!("write {}", manifest_path.display()))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "scope": manifest.scope,
+            "patch_version": manifest.patch_version,
+            "release_line": manifest.release_line,
+            "manifest_path": manifest_path,
+            "counts": {
+                "tables": manifest.tables.len(),
+                "selected_areas": manifest.selected_areas.len(),
+                "candidate_files": manifest.candidate_files.len(),
+                "extracted_files": manifest.extracted_files.len(),
+                "missing_files": manifest.missing_files.len(),
+            },
+            "warnings": manifest.warnings,
+        }))?
+    );
+    Ok(())
+}
+
+fn topology_summaries(rows: &GraphqlDatRows) -> anyhow::Result<HashMap<usize, TopologySummary>> {
+    rows.rows
+        .iter()
+        .map(|row| {
+            let row_index = row_unsigned(row, "_index")
+                .context("topology row missing _index")?
+                .try_into()
+                .context("topology row index does not fit usize")?;
+            Ok((
+                row_index,
+                TopologySummary {
+                    row_index,
+                    id: row_string(row, "Id").unwrap_or_default(),
+                    graph_file: non_empty_string(row, "DGRFile"),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn campaign_area_summaries(rows: &GraphqlDatRows) -> anyhow::Result<Vec<CampaignAreaSummary>> {
+    let mut areas = Vec::new();
+    for row in &rows.rows {
+        let id = row_string(row, "Id").unwrap_or_default();
+        if id == "NULL" || id.is_empty() {
+            continue;
+        }
+        let act = row_integer(row, "Act").unwrap_or_default();
+        if !(1..=5).contains(&act) {
+            continue;
+        }
+        if !id.starts_with(&format!("1_{act}")) {
+            continue;
+        }
+        if row_bool(row, "IsMapArea").unwrap_or(false) {
+            continue;
+        }
+        let row_index = row_unsigned(row, "_index")
+            .context("WorldAreas row missing _index")?
+            .try_into()
+            .context("WorldAreas row index does not fit usize")?;
+        areas.push(CampaignAreaSummary {
+            row_index,
+            id,
+            name: row_string(row, "Name").unwrap_or_default(),
+            act,
+            is_town: row_bool(row, "IsTown").unwrap_or(false),
+            area_level: row_integer(row, "AreaLevel").unwrap_or_default(),
+            topology_indices: row_array_unsigned(row, "TopologiesKeys"),
+            tsi_file: non_empty_string(row, "TSIFile").map(normalize_logical_path),
+        });
+    }
+    Ok(areas)
+}
+
+fn terrain_candidates(
+    areas: &[CampaignAreaSummary],
+    topology_by_index: &HashMap<usize, TopologySummary>,
+) -> Vec<TerrainCandidate> {
+    let mut candidates = Vec::new();
+    for area in areas {
+        if let Some(tsi_file) = &area.tsi_file {
+            candidates.push(TerrainCandidate {
+                logical_path: tsi_file.clone(),
+                source: format!("WorldAreas[{}].TSIFile {}", area.row_index, area.id),
+                kind: TerrainCandidateKind::Tsi,
+            });
+        }
+        for topology_index in &area.topology_indices {
+            let Some(topology) = topology_by_index.get(topology_index) else {
+                continue;
+            };
+            let Some(graph_file) = &topology.graph_file else {
+                continue;
+            };
+            let normalized_graph = normalize_logical_path(graph_file);
+            let source = format!(
+                "WorldAreas[{}].TopologiesKeys -> Topologies[{}] {}",
+                area.row_index, topology.row_index, topology.id
+            );
+            candidates.push(TerrainCandidate {
+                logical_path: normalized_graph.clone(),
+                source: source.clone(),
+                kind: TerrainCandidateKind::Graph,
+            });
+            if let Some(dgr_path) =
+                replace_extension(&normalized_graph, "dgr").filter(|path| path != &normalized_graph)
+            {
+                candidates.push(TerrainCandidate {
+                    logical_path: dgr_path,
+                    source: source.clone(),
+                    kind: TerrainCandidateKind::DgrVariant,
+                });
+            }
+            if let Some(arm_path) = replace_extension(&normalized_graph, "arm") {
+                candidates.push(TerrainCandidate {
+                    logical_path: arm_path,
+                    source,
+                    kind: TerrainCandidateKind::ArmVariant,
+                });
+            }
+        }
+    }
+    candidates
+}
+
+fn raw_output_path(root: &Path, logical_path: &str) -> PathBuf {
+    logical_path
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != "." && *part != "..")
+        .fold(root.to_path_buf(), |path, part| path.join(part))
+}
+
+fn normalize_logical_path(path: impl AsRef<str>) -> String {
+    path.as_ref().replace('\\', "/").to_lowercase()
+}
+
+fn replace_extension(path: &str, extension: &str) -> Option<String> {
+    let (base, _) = path.rsplit_once('.')?;
+    Some(format!("{base}.{extension}"))
+}
+
+fn row_value<'a>(row: &'a poe_ggpk::DatRow, name: &str) -> Option<&'a DatValue> {
+    row.0
+        .iter()
+        .find_map(|(key, value)| (key == name).then_some(value))
+}
+
+fn row_string(row: &poe_ggpk::DatRow, name: &str) -> Option<String> {
+    match row_value(row, name)? {
+        DatValue::String(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn non_empty_string(row: &poe_ggpk::DatRow, name: &str) -> Option<String> {
+    row_string(row, name).filter(|value| !value.is_empty())
+}
+
+fn row_integer(row: &poe_ggpk::DatRow, name: &str) -> Option<i64> {
+    match row_value(row, name)? {
+        DatValue::Integer(value) => Some(*value),
+        DatValue::Unsigned(value) => i64::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn row_unsigned(row: &poe_ggpk::DatRow, name: &str) -> Option<u64> {
+    match row_value(row, name)? {
+        DatValue::Unsigned(value) => Some(*value),
+        DatValue::Integer(value) => u64::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn row_bool(row: &poe_ggpk::DatRow, name: &str) -> Option<bool> {
+    match row_value(row, name)? {
+        DatValue::Bool(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn row_array_unsigned(row: &poe_ggpk::DatRow, name: &str) -> Vec<usize> {
+    match row_value(row, name) {
+        Some(DatValue::Array(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                DatValue::Unsigned(value) => usize::try_from(*value).ok(),
+                DatValue::Integer(value) => usize::try_from(*value).ok(),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn default_columns_for_table(table_name: &str) -> Vec<String> {
