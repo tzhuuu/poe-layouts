@@ -2,14 +2,56 @@ namespace PoeLayouts;
 
 table LayoutDatabase {
   schema_version: string;
+  game_version: string;
+  release_line: string;
   scope: string;
   zones: [Zone];
+  terrain_files: [TerrainFile];
+  source_files: [SourceFile];
+  warnings: [string];
 }
 
 table Zone {
+  row_index: uint;
   id: string;
   name: string;
   act: int;
+  area_level: int;
+  is_town: bool;
+  topology_indices: [uint];
+  tsi_file: string;
+}
+
+enum TerrainFileKind: byte {
+  Unknown,
+  Graph,
+  Tsi,
+  DgrVariant,
+  ArmVariant
+}
+
+enum TerrainFileStatus: byte {
+  Candidate,
+  Extracted,
+  Missing
+}
+
+table TerrainFile {
+  logical_path: string;
+  source: string;
+  kind: TerrainFileKind;
+  status: TerrainFileStatus;
+  reason: string;
+}
+
+table SourceFile {
+  logical_path: string;
+  output_path: string;
+  cache_key: string;
+  cache_path: string;
+  cache_source: string;
+  byte_size: ulong;
+  blake3: string;
 }
 
 root_type LayoutDatabase;

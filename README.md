@@ -2,6 +2,10 @@
 
 Local-first Path of Exile layout visualizer rewrite.
 
+The app target is Tauri + React + Pixi. There is no hosted backend in the
+planned product shape; Rust commands fetch/update data into local artifacts, and
+the Tauri app renders those artifacts locally.
+
 The current target is PoE1 campaign Acts 1-5. The planned architecture is:
 
 ```text
@@ -25,6 +29,7 @@ The first implementation slice lives in:
 
 ```text
 crates/poe-ggpk  low-level CDN/cache/GGPK helpers
+crates/poe-layouts-core  campaign scrape and layout artifact APIs
 crates/poe-cli   command-line entrypoint for pipeline debugging
 ```
 
@@ -126,6 +131,26 @@ rebuild the checked-in files from the local cache.
 The extractor will eventually generate the full bundle list for Acts 1-5 after
 reading `_.index.bin`. The cache layer is already shaped so that parse/build
 steps can require all inputs to exist locally before they start.
+
+Scrape the current Acts 1-5 campaign scope into the raw cache plus the
+app-facing `FlatBuffers` artifact:
+
+```sh
+cargo run -p poe-cli -- scrape-campaign-acts-1-5
+```
+
+The default outputs are:
+
+```text
+.poe-layouts/raw/campaign-acts-1-5/manifest.json
+app/public/data/layouts.bin
+```
+
+Inspect the generated app artifact:
+
+```sh
+cargo run -p poe-cli -- inspect-layout-db
+```
 
 The `inspect-index` command currently uses a small Node.js `ooz-wasm` bridge for
 Oodle chunks. Rust owns the bundle/index orchestration and parsing around that

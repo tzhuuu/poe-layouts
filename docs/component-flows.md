@@ -13,17 +13,32 @@ poe-cli
      -> bundle/index parsers
      -> datc64 binary reader
      -> GraphQL dat schema interpreter
+  -> poe-layouts-core
+     -> campaign Acts 1-5 scrape API
+     -> local raw/model artifacts
+  -> Tauri app
+     -> React app shell
+     -> Pixi layout renderer
+     -> poe-layouts-core
   -> scripts/ooz-decompress-bundle.mjs
      -> ooz-wasm
 ```
 
-- `poe-cli` is the debugging and pipeline entrypoint.
+- `poe-cli` is the debugging and pipeline entrypoint. It owns CLI flags and the
+  temporary Node.js Oodle bridge invocation.
 - `poe-ggpk` owns stable Rust APIs for patch versions, cache layout, bundle
   header parsing, index parsing, path hashing, path reps unpacking, and cache
   verification. It also owns generic PoE file readers, plus source-specific
   fetch clients such as `DatSchemaClient`.
+- `poe-layouts-core` owns milestone-2 layout-domain APIs. It consumes
+  `PatchClient`, `GraphqlDatSchema`, and a caller-provided `BundleDecompressor`
+  to produce raw campaign scrape manifests and app-facing FlatBuffers artifacts.
 - `scripts/ooz-decompress-bundle.mjs` is the temporary Oodle bridge. It should
   stay thin: read bundle bytes, decode chunks with `ooz-wasm`, write bytes.
+- The visualizer remains a local Tauri app. Vite is a frontend development and
+  build tool only; there is no hosted backend service in the product shape.
+- Tauri commands should expose layout-domain operations to React/Pixi, not raw
+  CDN, bundle, `.datc64`, or GraphQL schema mechanics.
 
 ## `poe-ggpk` Source Layout
 
@@ -49,6 +64,29 @@ fetching cached CDN bundles, loading the decompressed index, resolving logical
 paths, and extracting logical files. The caller supplies a `BundleDecompressor`
 implementation; today the CLI implementation shells out to the temporary
 Node.js `ooz-wasm` bridge.
+
+`poe-schema` owns the app-facing FlatBuffers schema and small Rust writer/reader
+helpers. Scrape/build code should pass typed model structs into this crate
+instead of constructing FlatBuffers directly in CLI code.
+
+## `poe-layouts-core` Source Layout
+
+```text
+lib.rs  Acts 1-5 scrape API, manifest/model conversion, layout DB inspection
+```
+
+The core crate is intentionally small right now. As milestone 2 grows, split it
+around stable domain seams:
+
+```text
+campaign.rs       Acts 1-5 scope selection and scrape orchestration
+layout_db.rs      manifest -> FlatBuffers model conversion
+terrain.rs        graph/TSI/DGR/ARM dependency parsing
+tauri_api.rs      optional DTO helpers for local app commands
+```
+
+The important boundary is that CLI and Tauri should call this crate rather than
+duplicating campaign scrape behavior.
 
 ## Milestone 1 Outcome: Parser Input Foundation
 
@@ -202,15 +240,30 @@ scrape campaign-acts-1-5
   -> record simple .dgr/.arm path variants
   -> extract candidates that are present and available in cache/network mode
   -> write raw cache and manifest with missing paths/warnings
+  -> convert scrape summary into poe_layouts.fbs model structs
+  -> write app/public/data/layouts.bin
 ```
 
-The goal of this milestone is not layout modeling yet. It is to produce a
-repeatable raw corpus and manifest that the parser/model milestones can consume.
+The goal of this milestone is not full layout graph modeling yet. It produces a
+repeatable raw corpus, JSON manifest, and first app-facing FlatBuffers artifact
+that later parser/model milestones can enrich.
 
 Current first pass: `scrape-campaign-acts-1-5` writes
-`.poe-layouts/raw/campaign-acts-1-5/manifest.json`. In offline mode with only the
-current table bundles cached, it selects 81 main campaign areas and records
-terrain candidates as missing cache entries rather than failing the scrape.
+`.poe-layouts/raw/campaign-acts-1-5/manifest.json` and
+`app/public/data/layouts.bin`. In offline mode with only the current table
+bundles cached, it selects 81 main campaign areas and records terrain candidates
+as missing cache entries rather than failing the scrape.
+
+`inspect-layout-db` reads the FlatBuffers artifact back and prints counts plus a
+small zone sample. Use it as the quick self-validation step after scraping.
+
+The Tauri shell currently exposes a local `inspect_layout_db` command that calls
+`poe-layouts-core`. A future scrape command should call the same core scraper
+once the desktop packaging story for the temporary Oodle decoder is settled.
+
+The Tauri app should eventually refresh or load this corpus through local Rust
+commands. The app UI should not require a hosted server; the only network path
+belongs to explicit update/fetch commands in the Rust data layer.
 
 ## Refactor Notes
 

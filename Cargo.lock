@@ -2516,6 +2516,8 @@ dependencies = [
  "anyhow",
  "clap",
  "poe-ggpk",
+ "poe-layouts-core",
+ "poe-schema",
  "serde",
  "serde_json",
  "tempfile",
@@ -2536,9 +2538,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "poe-layouts-core"
+version = "0.1.0"
+dependencies = [
+ "poe-ggpk",
+ "poe-schema",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "poe-layouts-tauri"
 version = "0.1.0"
 dependencies = [
+ "poe-layouts-core",
  "tauri",
  "tauri-build",
 ]

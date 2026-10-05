@@ -1,22 +1,16 @@
 [package]
-name = "poe-cli"
+name = "poe-layouts-core"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
-[[bin]]
-name = "poe"
-path = "src/main.rs"
-
 [dependencies]
-anyhow.workspace = true
-clap = { workspace = true, features = ["derive"] }
 poe-ggpk = { path = "../poe-ggpk" }
-poe-layouts-core = { path = "../poe-layouts-core" }
 poe-schema = { path = "../poe-schema" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

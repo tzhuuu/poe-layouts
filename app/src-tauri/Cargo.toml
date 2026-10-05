@@ -8,6 +8,7 @@ license.workspace = true
 tauri-build = { version = "2.4.1", features = [] }
 
 [dependencies]
+poe-layouts-core = { path = "../../crates/poe-layouts-core" }
 tauri = { version = "2.8.5", features = [] }
 
 [lints]

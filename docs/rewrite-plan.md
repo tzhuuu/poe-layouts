@@ -22,6 +22,8 @@ improves.
 - Use a single canonical schema shared by Rust and TypeScript.
 - Use FlatBuffers as the primary app data artifact.
 - Keep the Tauri app local-first with no required network calls.
+- Do not add a hosted backend. Explicit Rust update commands may fetch patch
+  and schema data; normal visualization reads local artifacts.
 - Use Pixi.js for 2D layout visualization.
 - Preserve enough raw provenance to explain every rendered node, edge, room, and
   warning.
@@ -61,14 +63,14 @@ below describe the intended libraries and why they belong in the design.
 | --- | --- |
 | `memmap2` | Mapping a multi-GB GGPK may be useful later, but `File + Read + Seek` is easier to audit first. Add mmap only if profiling proves it matters. |
 | SQLite as canonical storage | Useful for ad hoc analysis, but FlatBuffers should be the app contract. Add SQLite later as a derived debug index if needed. |
-| A web server/backend inside Tauri | The app should load a local generated artifact directly. Rust commands generate data; frontend renders it. |
+| A hosted web service or server backend | The app should load a local generated artifact directly. Rust commands generate data; frontend renders it. Vite is only for frontend development/builds. |
 | Three.js | The visualizer is a 2D topology explorer. Pixi is enough for the first complete rewrite. |
 
 ### TypeScript/Tauri Libraries
 
 | Area | Library | Intended Use | Notes |
 | --- | --- | --- | --- |
-| App shell | Tauri 2 | Native desktop shell and local file permissions. | Keep Rust backend minimal at runtime; pipeline runs as CLI. |
+| App shell | Tauri 2 | Native desktop shell and local file permissions without hosting a service. | Keep Rust backend minimal at runtime; pipeline runs as CLI/library commands. |
 | Build | Vite | Fast frontend dev server and production build. | Already in the prototype. |
 | Language | TypeScript | UI/query/render code. | Strict types around generated FlatBuffers accessors and UI view models. |
 | Rendering | Pixi.js 8 | 2D graph rendering, hit testing, pan/zoom transforms, hover states. | Keep all graph rendering in one renderer module. |
@@ -121,8 +123,9 @@ npm ls --depth=0
   - generated Rust bindings location
   - generated TypeScript bindings location
   - runtime package versions
-- Do not add network/runtime service dependencies to the app. The app should
-  open a local artifact and render it.
+- Do not add hosted service dependencies to the app. The app may expose local
+  Tauri commands for cache refresh and artifact generation, then open a local
+  artifact and render it.
 
 ## High-Level Pipeline
 
@@ -136,11 +139,15 @@ PoE install / Content.ggpk
   -> Tauri + React + Pixi visualizer
 ```
 
-The pipeline output should eventually be a single binary artifact:
+The current pipeline already writes a first scrape-level binary artifact:
 
 ```text
 app/public/data/layouts.bin
 ```
+
+That artifact currently contains campaign zones, terrain candidates, source
+files, and scrape warnings. Later milestones should enrich the same contract
+with parsed graph nodes, edges, rooms, and classification details.
 
 During reverse-engineering, we should also keep debug exports:
 
@@ -169,10 +176,10 @@ crates/
     file listing and logical-path lookup
     raw file extraction
 
-  poe-extract/
-    scope-aware extraction
-    campaign Acts 1-5 scraper
-    dependency traversal for referenced terrain files
+  poe-layouts-core/
+    campaign Acts 1-5 scrape APIs
+    layout artifact construction
+    local operations shared by CLI and Tauri
 
   poe-formats/
     low-level parsers for PoE formats

@@ -3,6 +3,7 @@ members = [
     "app/src-tauri",
     "crates/poe-cli",
     "crates/poe-ggpk",
+    "crates/poe-layouts-core",
     "crates/poe-schema",
 ]
 resolver = "2"
