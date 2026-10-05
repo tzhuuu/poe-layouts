@@ -7,6 +7,7 @@ use crate::cache::{CacheError, CacheFetch, CacheManifest, CacheMode, DiskCache};
 const BUNDLE_DIR: &str = "Bundles2";
 const INDEX_BUNDLE: &str = "_.index.bin";
 const LATEST_VERSION_URL: &str = "https://poe-versions.obsoleet.org";
+pub const SUPPORTED_POE1_RELEASE_LINE: &str = "3.29";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -80,10 +81,7 @@ impl PatchCdnSource {
 
     #[must_use]
     pub fn game_slug(&self) -> &'static str {
-        match self.game {
-            PoeGame::Poe1 => "poe1",
-            PoeGame::Poe2 => "poe2",
-        }
+        self.game.slug()
     }
 
     #[must_use]
@@ -99,6 +97,16 @@ impl PatchCdnSource {
     #[must_use]
     pub fn cache_namespace(&self) -> String {
         format!("{}/{}", self.game_slug(), self.release_line())
+    }
+
+    #[must_use]
+    pub fn release_cache_namespace(game: PoeGame, release_line: &str) -> String {
+        format!("{}/{}", game.slug(), release_line)
+    }
+
+    #[must_use]
+    pub fn poe1_supported_release_namespace() -> String {
+        Self::release_cache_namespace(PoeGame::Poe1, SUPPORTED_POE1_RELEASE_LINE)
     }
 
     #[must_use]
@@ -193,6 +201,16 @@ impl PatchCdnSource {
             self.cache_namespace(),
             &fetches,
         ))
+    }
+}
+
+impl PoeGame {
+    #[must_use]
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Poe1 => "poe1",
+            Self::Poe2 => "poe2",
+        }
     }
 }
 

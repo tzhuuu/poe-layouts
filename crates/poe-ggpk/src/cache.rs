@@ -58,6 +58,17 @@ pub struct CacheVerification {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheClearReport {
+    pub key: String,
+    pub path: PathBuf,
+    pub existed: bool,
+    pub removed: bool,
+    pub file_count: usize,
+    pub directory_count: usize,
+    pub byte_len: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CacheMismatch {
     pub key: String,
     pub expected_blake3: String,
@@ -214,6 +225,9 @@ impl DiskCache {
     /// Returns [`CacheError::UnsafeKey`] when `key` is absolute or contains
     /// parent/current-directory components.
     pub fn path_for_key(&self, key: &str) -> Result<PathBuf, CacheError> {
+        if key.is_empty() {
+            return Err(CacheError::UnsafeKey(key.to_owned()));
+        }
         let key_path = Path::new(key);
         if key_path.is_absolute() {
             return Err(CacheError::UnsafeKey(key.to_owned()));
@@ -227,6 +241,29 @@ impl DiskCache {
             }
         }
         Ok(path)
+    }
+
+    /// Remove the cache subtree identified by `key`.
+    ///
+    /// This is intended for namespace-style keys such as `poe1/3.29`, but also
+    /// works for an individual cached file key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheError`] when the key is unsafe or the subtree cannot be
+    /// inspected or removed.
+    pub fn clear_key(&self, key: &str) -> Result<CacheClearReport, CacheError> {
+        self.clear_key_with_mode(key, false)
+    }
+
+    /// Inspect the cache subtree identified by `key` without removing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheError`] when the key is unsafe or the subtree cannot be
+    /// inspected.
+    pub fn preview_clear_key(&self, key: &str) -> Result<CacheClearReport, CacheError> {
+        self.clear_key_with_mode(key, true)
     }
 
     /// Write a cache manifest atomically.
@@ -291,6 +328,40 @@ impl DiskCache {
             checked: manifest.entries.len(),
             missing,
             mismatched,
+        })
+    }
+
+    fn clear_key_with_mode(
+        &self,
+        key: &str,
+        dry_run: bool,
+    ) -> Result<CacheClearReport, CacheError> {
+        let path = self.path_for_key(key)?;
+        if !path.exists() {
+            return Ok(CacheClearReport {
+                key: key.to_owned(),
+                path,
+                existed: false,
+                removed: false,
+                file_count: 0,
+                directory_count: 0,
+                byte_len: 0,
+            });
+        }
+
+        let stats = path_stats(&path)?;
+        if !dry_run {
+            remove_path(&path)?;
+        }
+
+        Ok(CacheClearReport {
+            key: key.to_owned(),
+            path,
+            existed: true,
+            removed: !dry_run,
+            file_count: stats.file_count,
+            directory_count: stats.directory_count,
+            byte_len: stats.byte_len,
         })
     }
 }
@@ -359,6 +430,65 @@ fn write_json_atomic(path: &Path, metadata: &CacheMetadata) -> Result<(), CacheE
         source,
     })?;
     write_atomic(path, &bytes)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PathStats {
+    file_count: usize,
+    directory_count: usize,
+    byte_len: u64,
+}
+
+fn path_stats(path: &Path) -> Result<PathStats, CacheError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| CacheError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    if metadata.is_dir() {
+        let mut stats = PathStats {
+            file_count: 0,
+            directory_count: 1,
+            byte_len: 0,
+        };
+        for entry in fs::read_dir(path).map_err(|source| CacheError::Io {
+            path: path.to_owned(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| CacheError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+            let child = path_stats(&entry.path())?;
+            stats.file_count += child.file_count;
+            stats.directory_count += child.directory_count;
+            stats.byte_len += child.byte_len;
+        }
+        Ok(stats)
+    } else {
+        Ok(PathStats {
+            file_count: 1,
+            directory_count: 0,
+            byte_len: metadata.len(),
+        })
+    }
+}
+
+fn remove_path(path: &Path) -> Result<(), CacheError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| CacheError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path).map_err(|source| CacheError::Io {
+            path: path.to_owned(),
+            source,
+        })
+    } else {
+        fs::remove_file(path).map_err(|source| CacheError::Io {
+            path: path.to_owned(),
+            source,
+        })
+    }
 }
 
 fn hash_file(path: &Path) -> Result<String, CacheError> {

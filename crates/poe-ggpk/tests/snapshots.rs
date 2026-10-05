@@ -1,4 +1,5 @@
 use std::io::Cursor;
+use std::path::Path;
 
 use insta::assert_yaml_snapshot;
 use poe_ggpk::ggpk::scan_record_headers;
@@ -56,6 +57,15 @@ fn cache_rejects_unsafe_keys() {
 }
 
 #[test]
+fn cache_rejects_empty_keys() {
+    let cache = DiskCache::new(".poe-layouts/cache");
+    let error = cache
+        .preview_clear_key("")
+        .expect_err("empty cache key should not resolve to cache root");
+    assert_yaml_snapshot!("empty_cache_key_error", error.to_string());
+}
+
+#[test]
 fn offline_cache_miss_is_stable() {
     let temp = tempfile::tempdir().expect("temp cache dir");
     let cache = DiskCache::new(temp.path());
@@ -67,6 +77,71 @@ fn offline_cache_miss_is_stable() {
         )
         .expect_err("offline mode should fail when bytes are missing");
     assert_yaml_snapshot!("offline_cache_miss_error", error.to_string());
+}
+
+#[test]
+fn clear_release_line_cache_removes_only_that_namespace() {
+    let temp = tempfile::tempdir().expect("temp cache dir");
+    write_test_file(
+        temp.path(),
+        "poe1/3.29/patches/3.29.3.3/Bundles2/_.index.bin",
+        b"index",
+    );
+    write_test_file(
+        temp.path(),
+        "poe1/3.29/patches/3.29.3.3/Bundles2/_.index.bin.json",
+        b"{}",
+    );
+    write_test_file(
+        temp.path(),
+        "poe1/3.28/patches/3.28.2.1/Bundles2/_.index.bin",
+        b"older",
+    );
+
+    let cache = DiskCache::new(temp.path());
+    let preview = cache
+        .preview_clear_key("poe1/3.29")
+        .expect("preview release-line clear");
+    assert_yaml_snapshot!(
+        "preview_clear_release_line",
+        report_for_snapshot(temp.path(), &preview)
+    );
+
+    let report = cache
+        .clear_key("poe1/3.29")
+        .expect("clear release-line cache");
+    assert_yaml_snapshot!(
+        "clear_release_line",
+        report_for_snapshot(temp.path(), &report)
+    );
+    assert!(!temp.path().join("poe1/3.29").exists());
+    assert!(temp.path().join("poe1/3.28").exists());
+}
+
+#[test]
+fn clear_exact_patch_cache_keeps_release_line() {
+    let temp = tempfile::tempdir().expect("temp cache dir");
+    write_test_file(
+        temp.path(),
+        "poe1/3.29/patches/3.29.3.3/Bundles2/_.index.bin",
+        b"index",
+    );
+    write_test_file(
+        temp.path(),
+        "poe1/3.29/patches/3.29.3.2/Bundles2/_.index.bin",
+        b"previous",
+    );
+
+    let cache = DiskCache::new(temp.path());
+    let report = cache
+        .clear_key("poe1/3.29/patches/3.29.3.3")
+        .expect("clear exact patch cache");
+    assert_yaml_snapshot!(
+        "clear_exact_patch",
+        report_for_snapshot(temp.path(), &report)
+    );
+    assert!(!temp.path().join("poe1/3.29/patches/3.29.3.3").exists());
+    assert!(temp.path().join("poe1/3.29/patches/3.29.3.2").exists());
 }
 
 #[test]
@@ -87,6 +162,25 @@ fn manifest_verification_reports_missing_entries() {
         .verify_manifest(&manifest)
         .expect("verify missing cache manifest");
     assert_yaml_snapshot!("manifest_verification_missing", verification);
+}
+
+fn write_test_file(root: &Path, key: &str, bytes: &[u8]) {
+    let path = root.join(key);
+    std::fs::create_dir_all(path.parent().expect("test file parent"))
+        .expect("create test cache dirs");
+    std::fs::write(path, bytes).expect("write test cache file");
+}
+
+fn report_for_snapshot(root: &Path, report: &poe_ggpk::CacheClearReport) -> serde_json::Value {
+    serde_json::json!({
+        "key": report.key,
+        "path": report.path.strip_prefix(root).expect("report under cache root").display().to_string(),
+        "existed": report.existed,
+        "removed": report.removed,
+        "file_count": report.file_count,
+        "directory_count": report.directory_count,
+        "byte_len": report.byte_len,
+    })
 }
 
 #[test]

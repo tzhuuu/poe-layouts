@@ -1,0 +1,11 @@
+---
+source: crates/poe-ggpk/tests/snapshots.rs
+expression: "report_for_snapshot(temp.path(), preview)"
+---
+byte_len: 7
+directory_count: 4
+existed: true
+file_count: 2
+key: poe1/3.29
+path: poe1/3.29
+removed: false

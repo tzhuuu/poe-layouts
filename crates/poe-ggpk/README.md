@@ -32,6 +32,20 @@ cargo run -p poe-cli -- verify-cache \
   --manifest .poe-layouts/cache-manifest.json
 ```
 
+For now, parser commands are intentionally scoped to PoE1 `3.29`. The cache can
+be previewed or cleared at the release-line namespace:
+
+```sh
+cargo run -p poe-cli -- clear-cache --dry-run
+cargo run -p poe-cli -- clear-cache
+```
+
+Or at one exact patch version:
+
+```sh
+cargo run -p poe-cli -- clear-cache --patch-version 3.29.3.3
+```
+
 The future extractor should produce the bundle list after resolving logical
 files from `_.index.bin`; this crate already provides the offline cache contract
 that step will use.

@@ -1,0 +1,5 @@
+---
+source: crates/poe-ggpk/tests/snapshots.rs
+expression: error.to_string()
+---
+"cache key must be a relative safe path: "
