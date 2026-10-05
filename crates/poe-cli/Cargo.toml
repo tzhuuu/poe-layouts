@@ -1,0 +1,18 @@
+[package]
+name = "poe-cli"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "poe"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+poe-ggpk = { path = "../poe-ggpk" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

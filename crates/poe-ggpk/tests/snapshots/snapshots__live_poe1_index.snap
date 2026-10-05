@@ -1,0 +1,12 @@
+---
+source: crates/poe-ggpk/tests/snapshots.rs
+expression: snapshot
+---
+game: poe1
+patch_version: 3.29.3.3
+release_line: "3.29"
+cache_namespace: poe1/3.29
+index_url: "https://patch.poecdn.com/3.29.3.3/Bundles2/_.index.bin"
+cache_source: network
+byte_len: 20398470
+blake3: 97b94b289597b782e34c2b0c0e5325d65b6711db97b337061a7e2426df990a58

@@ -28,12 +28,11 @@ fn run_flatc(prefix_args: &[&str], out_dir: &Path, schema: &Path) {
     command.arg(out_dir).arg(schema);
 
     let output = command.output().expect("failed to invoke flatc");
-    if !output.status.success() {
-        panic!(
-            "flatc failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    assert!(
+        output.status.success(),
+        "flatc failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
