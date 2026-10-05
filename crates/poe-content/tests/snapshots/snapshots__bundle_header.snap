@@ -1,0 +1,11 @@
+---
+source: crates/poe-content/tests/snapshots.rs
+expression: header_for_snapshot(&header)
+---
+chunk_count: 2
+chunk_sizes:
+  - 101
+  - 202
+compression_granularity: 32768
+decompressed_data_size: 65536
+payload_offset: 68

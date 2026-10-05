@@ -1,7 +1,0 @@
----
-source: crates/poe-ggpk/tests/snapshots.rs
-expression: "serde_json::json!({\n    \"metadata/worldareas.datc64\":\n    format!(\"{:016x}\", murmur64a_lower(\"Metadata/WorldAreas.datc64\")),\n    \"metadata/terrain/act1/area.tsi\":\n    format!(\"{:016x}\", murmur64a_lower(\"Metadata/Terrain/Act1/Area.tsi\")),\n    \"metadata/terrain/act1/area.dgr\":\n    format!(\"{:016x}\", murmur64a_lower(\"Metadata/Terrain/Act1/Area.dgr\")),\n})"
----
-metadata/terrain/act1/area.dgr: 8282b8e88766893e
-metadata/terrain/act1/area.tsi: 02eda44abe76887d
-metadata/worldareas.datc64: 49dd07dd36104e33

@@ -1,0 +1,17 @@
+[package]
+name = "pather-core"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+pather-schema = { path = "../pather-schema" }
+poe-content = { path = "../poe-content" }
+poe-dat = { path = "../poe-dat" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

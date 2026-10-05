@@ -1,10 +1,11 @@
 [workspace]
 members = [
-    "app/src-tauri",
-    "crates/poe-cli",
-    "crates/poe-ggpk",
-    "crates/poe-layouts-core",
-    "crates/poe-schema",
+    "crates/pather-cli",
+    "crates/pather-core",
+    "crates/pather-layouts-server",
+    "crates/pather-schema",
+    "crates/poe-content",
+    "crates/poe-dat",
 ]
 resolver = "2"
 

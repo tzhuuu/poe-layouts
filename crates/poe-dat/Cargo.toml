@@ -1,0 +1,16 @@
+[package]
+name = "poe-dat"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+poe-content = { path = "../poe-content" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+

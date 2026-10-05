@@ -1,8 +1,0 @@
----
-source: crates/poe-ggpk/tests/snapshots.rs
-expression: verification
----
-checked: 1
-missing:
-  - poe1/3.29/patches/3.29.3.3/Bundles2/_.index.bin
-mismatched: []

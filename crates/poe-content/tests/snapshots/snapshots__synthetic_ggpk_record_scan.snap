@@ -1,0 +1,10 @@
+---
+source: crates/poe-content/tests/snapshots.rs
+expression: records
+---
+- length: 12
+  offset: 0
+  tag: GGPK
+- length: 16
+  offset: 12
+  tag: FREE

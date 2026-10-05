@@ -1,0 +1,19 @@
+[package]
+name = "pather-schema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flatbuffers.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+thiserror.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

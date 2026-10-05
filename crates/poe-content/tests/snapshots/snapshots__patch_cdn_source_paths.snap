@@ -1,0 +1,9 @@
+---
+source: crates/poe-content/tests/snapshots.rs
+expression: "serde_json::json!({\n    \"bundle_url\": source.bundle_url(\"_.index.bin\"), \"cache_key\":\n    source.cache_key(\"_.index.bin\"), \"cache_namespace\":\n    source.cache_namespace(), \"release_line\": source.release_line(),\n    \"nested_cache_key\": source.cache_key(\"Metadata/Terrain/Act1/Area.tsi\"),\n})"
+---
+bundle_url: "https://patch.poecdn.com/3.29.3.3/Bundles2/_.index.bin"
+cache_key: poe1/3.29/patches/3.29.3.3/Bundles2/_.index.bin
+cache_namespace: poe1/3.29
+nested_cache_key: poe1/3.29/patches/3.29.3.3/Bundles2/Metadata/Terrain/Act1/Area.tsi
+release_line: "3.29"

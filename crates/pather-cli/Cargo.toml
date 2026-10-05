@@ -1,0 +1,22 @@
+[package]
+name = "pather-cli"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "pather"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+pather-core = { path = "../pather-core" }
+poe-content = { path = "../poe-content" }
+poe-dat = { path = "../poe-dat" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
