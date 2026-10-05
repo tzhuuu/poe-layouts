@@ -4,8 +4,9 @@ use std::path::Path;
 use insta::assert_yaml_snapshot;
 use poe_ggpk::ggpk::scan_record_headers;
 use poe_ggpk::{
-    fetch_latest_patch_versions, murmur64a_lower, parse_bundle_header, parse_index_bundle,
-    CacheManifest, CacheManifestEntry, CacheMode, DiskCache, PatchCdnSource,
+    decompress_bundle, decompress_bundle_slice, fetch_latest_patch_versions, hydrate_index_bundle,
+    murmur64a_lower, parse_bundle_header, parse_index_bundle, CacheManifest, CacheManifestEntry,
+    CacheMode, DiskCache, PatchCdnSource, StoredBundleDecoder,
 };
 
 #[test]
@@ -62,6 +63,26 @@ fn bundle_header_parse_is_stable() {
 }
 
 #[test]
+fn stored_bundle_decompression_is_stable() {
+    let bundle = stored_bundle(&[b"abcd".as_slice(), b"efgh".as_slice()], 4);
+    let mut decoder = StoredBundleDecoder;
+    let whole = decompress_bundle(&bundle, &mut decoder).expect("decompress stored bundle");
+
+    let mut decoder = StoredBundleDecoder;
+    let mut slice = vec![0; 5];
+    decompress_bundle_slice(&bundle, 2, &mut slice, &mut decoder)
+        .expect("decompress stored bundle slice");
+
+    assert_yaml_snapshot!(
+        "stored_bundle_decompression",
+        serde_json::json!({
+            "whole": String::from_utf8(whole).expect("test utf-8"),
+            "slice_offset_2_len_5": String::from_utf8(slice).expect("test utf-8"),
+        })
+    );
+}
+
+#[test]
 fn murmur64a_path_hashes_are_stable() {
     assert_yaml_snapshot!(
         "murmur64a_path_hashes",
@@ -98,6 +119,29 @@ fn decompressed_index_bundle_parse_and_lookup_are_stable() {
             "world_areas": world_areas,
             "area_tsi": area_tsi,
             "missing": missing,
+        })
+    );
+}
+
+#[test]
+fn hydrated_index_bundle_double_unpack_is_stable() {
+    let path_reps_bundle = stored_bundle(&[b"path-reps-placeholder".as_slice()], 64);
+    let index_payload = synthetic_index_bundle_with_path_reps(&path_reps_bundle);
+    let outer_bundle = stored_bundle(&[index_payload.as_slice()], 65_536);
+    let mut decoder = StoredBundleDecoder;
+    let hydrated = hydrate_index_bundle(&outer_bundle, &mut decoder).expect("hydrate index bundle");
+    let world_areas = hydrated
+        .index
+        .file_location("Metadata/WorldAreas.datc64")
+        .expect("lookup world areas")
+        .expect("world areas should be present");
+
+    assert_yaml_snapshot!(
+        "hydrated_index_bundle",
+        serde_json::json!({
+            "summary": hydrated.index.summary(),
+            "path_reps": String::from_utf8(hydrated.path_reps).expect("test utf-8"),
+            "world_areas": world_areas,
         })
     );
 }
@@ -249,6 +293,10 @@ fn header_for_snapshot(header: &poe_ggpk::BundleHeader) -> serde_json::Value {
 }
 
 fn synthetic_index_bundle() -> Vec<u8> {
+    synthetic_index_bundle_with_path_reps(b"path-reps-placeholder")
+}
+
+fn synthetic_index_bundle_with_path_reps(path_reps: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::new();
     push_i32(&mut bytes, 2);
     push_bundle(&mut bytes, "Art/Textures", 1_024);
@@ -261,7 +309,7 @@ fn synthetic_index_bundle() -> Vec<u8> {
     push_i32(&mut bytes, 1);
     push_directory(&mut bytes, "metadata", 0, 0, 0);
 
-    bytes.extend_from_slice(b"path-reps-placeholder");
+    bytes.extend_from_slice(path_reps);
     bytes
 }
 
@@ -314,6 +362,32 @@ fn directory_for_snapshot(entry: &poe_ggpk::DirectoryIndexEntry) -> serde_json::
         "direct_size": entry.direct_size,
         "recursive_size": entry.recursive_size,
     })
+}
+
+fn stored_bundle(chunks: &[&[u8]], compression_granularity: u32) -> Vec<u8> {
+    let decompressed_size = chunks
+        .iter()
+        .map(|chunk| u32::try_from(chunk.len()).expect("test chunk len fits u32"))
+        .sum::<u32>();
+    let mut bytes = vec![0; 60];
+    bytes[0..4].copy_from_slice(&decompressed_size.to_le_bytes());
+    bytes[36..40].copy_from_slice(
+        &u32::try_from(chunks.len())
+            .expect("test chunk count fits u32")
+            .to_le_bytes(),
+    );
+    bytes[40..44].copy_from_slice(&compression_granularity.to_le_bytes());
+    for chunk in chunks {
+        bytes.extend_from_slice(
+            &u32::try_from(chunk.len())
+                .expect("test chunk len fits u32")
+                .to_le_bytes(),
+        );
+    }
+    for chunk in chunks {
+        bytes.extend_from_slice(chunk);
+    }
+    bytes
 }
 
 #[test]

@@ -1,11 +1,19 @@
 use std::str::Utf8Error;
 
+use crate::bundle::{decompress_bundle, BundleChunkDecoder, BundleError};
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct IndexBundle {
     pub bundles: Vec<BundleIndexEntry>,
     pub files: Vec<FileIndexEntry>,
     pub directories: Vec<DirectoryIndexEntry>,
     pub path_reps_bundle: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct HydratedIndexBundle {
+    pub index: IndexBundle,
+    pub path_reps: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -39,6 +47,8 @@ pub struct LogicalFileLocation {
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexBundleError {
+    #[error(transparent)]
+    Bundle(#[from] BundleError),
     #[error("index bundle ended early: need at least {needed} bytes, found {actual}")]
     UnexpectedEof { needed: usize, actual: usize },
     #[error("index bundle count is negative for {section}: {count}")]
@@ -108,6 +118,26 @@ pub fn parse_index_bundle(bytes: &[u8]) -> Result<IndexBundle, IndexBundleError>
         directories,
         path_reps_bundle: bytes[offset..].to_vec(),
     })
+}
+
+/// Decompress and parse `Bundles2/_.index.bin`, including its nested path reps
+/// bundle.
+///
+/// # Errors
+///
+/// Returns [`IndexBundleError`] when bundle decompression fails or the
+/// decompressed index sections are invalid.
+pub fn hydrate_index_bundle<D>(
+    index_bundle_bytes: &[u8],
+    decoder: &mut D,
+) -> Result<HydratedIndexBundle, IndexBundleError>
+where
+    D: BundleChunkDecoder,
+{
+    let index_bytes = decompress_bundle(index_bundle_bytes, decoder)?;
+    let index = parse_index_bundle(&index_bytes)?;
+    let path_reps = decompress_bundle(&index.path_reps_bundle, decoder)?;
+    Ok(HydratedIndexBundle { index, path_reps })
 }
 
 impl IndexBundle {

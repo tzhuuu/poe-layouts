@@ -1,0 +1,14 @@
+---
+source: crates/poe-ggpk/tests/snapshots.rs
+expression: "serde_json::json!({\n    \"summary\": hydrated.index.summary(), \"path_reps\":\n    String::from_utf8(hydrated.path_reps).expect(\"test utf-8\"), \"world_areas\":\n    world_areas,\n})"
+---
+path_reps: path-reps-placeholder
+summary:
+  bundles: 2
+  directories: 1
+  files: 2
+  path_reps_bundle_size: 85
+world_areas:
+  bundle: Art/Textures.bundle.bin
+  offset: 128
+  size: 42
