@@ -15,7 +15,9 @@ PoE install / Content.ggpk
 ```
 
 See [docs/rewrite-plan.md](docs/rewrite-plan.md) for the implementation plan,
-library choices, schema draft, and milestone checklist.
+library choices, schema draft, and milestone checklist. See
+[docs/component-flows.md](docs/component-flows.md) for the current pipeline and
+component flows.
 
 ## Current Parser Milestone
 
