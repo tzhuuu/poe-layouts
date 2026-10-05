@@ -116,6 +116,12 @@ deliberately the same layer as the CLI `prefetch-bundles`, `clear-cache`, and
 pipeline work share cache keys, release-line semantics, manifests, and app
 artifacts.
 
+The Acts 1-5 scrape treats table-declared `WorldAreas.TSIFile` and
+`Topologies.DGRFile` values as first-order terrain candidates only when the
+normalized logical path exists in the patch index. It does not invent sibling
+`.arm` or `.dgr` paths; those should come from parsing graph/terrain metadata
+files in a later pass.
+
 ## Milestone 1 Outcome: Parser Input Foundation
 
 Milestone 1 is achieved. The repo now has a reusable Rust foundation for getting

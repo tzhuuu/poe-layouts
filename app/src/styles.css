@@ -432,7 +432,8 @@ dd {
 }
 
 .zoneRow strong,
-.terrainTable span {
+.terrainPath span,
+.terrainPath small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -590,10 +591,22 @@ dd {
   font-size: 12px;
 }
 
-.terrainTable span {
+.terrainPath {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.terrainPath span,
+.terrainPath small {
   color: #24302d;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
+}
+
+.terrainPath small {
+  color: #7c6d65;
+  font-size: 11px;
 }
 
 .terrainTable em {

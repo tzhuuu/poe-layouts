@@ -199,7 +199,8 @@ where
 
     let topology_by_index = topology_summaries(&topologies);
     let selected_areas = campaign_area_summaries(&world_areas);
-    let mut candidates = terrain_candidates(&selected_areas, &topology_by_index);
+    let (mut candidates, skipped_candidates) =
+        terrain_candidates(&selected_areas, &topology_by_index, &logical_paths);
     candidates.sort();
     candidates.dedup();
 
@@ -232,6 +233,17 @@ where
         }
     }
 
+    let mut warnings = vec![
+        "This milestone resolves table-declared graph and TSI paths that are present in the patch index; deeper room dependencies require parsing extracted graph files.".to_owned(),
+        "Campaign selection currently uses WorldAreas Act 1-5, excludes map areas, and skips the NULL sentinel row.".to_owned(),
+    ];
+    if !skipped_candidates.is_empty() {
+        warnings.push(format!(
+            "Skipped {} table-declared terrain paths that were not present in the patch index.",
+            skipped_candidates.len()
+        ));
+    }
+
     let manifest = CampaignScrapeManifest {
         scope: CAMPAIGN_ACTS_ONE_TO_FIVE_SCOPE.to_owned(),
         patch_version: request.source.patch_version.clone(),
@@ -243,10 +255,7 @@ where
         candidate_files: candidates,
         extracted_files,
         missing_files,
-        warnings: vec![
-            "This milestone only resolves table-declared graph and TSI paths plus simple .dgr/.arm path variants; deeper terrain dependencies require parsing the extracted graph files.".to_owned(),
-            "Campaign selection currently uses WorldAreas Act 1-5, excludes map areas, and skips the NULL sentinel row.".to_owned(),
-        ],
+        warnings,
     };
 
     let manifest_path = request.out_dir.join("manifest.json");
@@ -512,15 +521,22 @@ fn campaign_area_summaries(rows: &[WorldAreaRow]) -> Vec<CampaignAreaSummary> {
 fn terrain_candidates(
     areas: &[CampaignAreaSummary],
     topology_by_index: &HashMap<usize, TopologySummary>,
-) -> Vec<TerrainCandidate> {
+    logical_paths: &HashSet<String>,
+) -> (Vec<TerrainCandidate>, Vec<TerrainCandidate>) {
     let mut candidates = Vec::new();
+    let mut skipped = Vec::new();
     for area in areas {
         if let Some(tsi_file) = &area.tsi_file {
-            candidates.push(TerrainCandidate {
-                logical_path: tsi_file.clone(),
-                source: format!("WorldAreas[{}].TSIFile {}", area.row_index, area.id),
-                kind: TerrainCandidateKind::Tsi,
-            });
+            push_indexed_candidate(
+                logical_paths,
+                &mut candidates,
+                &mut skipped,
+                TerrainCandidate {
+                    logical_path: tsi_file.clone(),
+                    source: format!("WorldAreas[{}].TSIFile {}", area.row_index, area.id),
+                    kind: TerrainCandidateKind::Tsi,
+                },
+            );
         }
         for topology_index in &area.topology_indices {
             let Some(topology) = topology_by_index.get(topology_index) else {
@@ -534,30 +550,32 @@ fn terrain_candidates(
                 "WorldAreas[{}].TopologiesKeys -> Topologies[{}] {}",
                 area.row_index, topology.row_index, topology.id
             );
-            candidates.push(TerrainCandidate {
-                logical_path: normalized_graph.clone(),
-                source: source.clone(),
-                kind: TerrainCandidateKind::Graph,
-            });
-            if let Some(dgr_path) =
-                replace_extension(&normalized_graph, "dgr").filter(|path| path != &normalized_graph)
-            {
-                candidates.push(TerrainCandidate {
-                    logical_path: dgr_path,
-                    source: source.clone(),
-                    kind: TerrainCandidateKind::DgrVariant,
-                });
-            }
-            if let Some(arm_path) = replace_extension(&normalized_graph, "arm") {
-                candidates.push(TerrainCandidate {
-                    logical_path: arm_path,
+            push_indexed_candidate(
+                logical_paths,
+                &mut candidates,
+                &mut skipped,
+                TerrainCandidate {
+                    logical_path: normalized_graph.clone(),
                     source,
-                    kind: TerrainCandidateKind::ArmVariant,
-                });
-            }
+                    kind: TerrainCandidateKind::Graph,
+                },
+            );
         }
     }
-    candidates
+    (candidates, skipped)
+}
+
+fn push_indexed_candidate(
+    logical_paths: &HashSet<String>,
+    candidates: &mut Vec<TerrainCandidate>,
+    skipped: &mut Vec<TerrainCandidate>,
+    candidate: TerrainCandidate,
+) {
+    if logical_paths.contains(&candidate.logical_path) {
+        candidates.push(candidate);
+    } else {
+        skipped.push(candidate);
+    }
 }
 
 fn zone_model(area: &CampaignAreaSummary) -> Result<ZoneModel, CampaignScrapeError> {
@@ -607,11 +625,6 @@ fn raw_output_path(root: &Path, logical_path: &str) -> PathBuf {
 
 fn normalize_logical_path(path: impl AsRef<str>) -> String {
     path.as_ref().replace('\\', "/").to_lowercase()
-}
-
-fn replace_extension(path: &str, extension: &str) -> Option<String> {
-    let (base, _) = path.rsplit_once('.')?;
-    Some(format!("{base}.{extension}"))
 }
 
 fn convert_u32(field: &'static str, value: usize) -> Result<u32, CampaignScrapeError> {

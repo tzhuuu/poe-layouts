@@ -574,7 +574,10 @@ function TerrainTable({ terrainFiles }: { terrainFiles: TerrainFileSummary[] }) 
         {rows.map((file) => (
           <article key={`${file.kind}:${file.logicalPath}:${file.source}`}>
             <strong>{terrainKindLabel(file.kind)}</strong>
-            <span>{file.logicalPath}</span>
+            <span className="terrainPath">
+              <span>{file.logicalPath}</span>
+              {file.reason && <small>{file.reason}</small>}
+            </span>
             <em className={file.status === TerrainFileStatus.Missing ? "warn" : ""}>
               {terrainStatusLabel(file.status)}
             </em>
