@@ -1,21 +1,14 @@
+#![allow(clippy::missing_errors_doc)]
+
 use std::collections::HashMap;
 use std::path::Path;
 
-use serde::ser::SerializeMap;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::Serialize;
 
-const ROW_COUNT_SIZE: usize = 4;
-const MEMSIZE: usize = 8;
-const MEM32_NULL: u32 = 0xfefe_fefe;
-const VDATA_MAGIC: [u8; 8] = [0xbb; 8];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DatFile<'a> {
-    pub row_count: usize,
-    pub row_length: usize,
-    pub data_fixed: &'a [u8],
-    pub data_variable: &'a [u8],
-}
+use crate::dat_file::{
+    field_length, field_type_label, is_readable_field_type, read_projected_rows, DatColumn,
+    DatFieldType, DatFileError, DatRow,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphqlTable {
@@ -43,30 +36,14 @@ pub struct DatColumnHeader {
     pub field_type: DatFieldType,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DatFieldType {
-    Bool,
-    I16,
-    I32,
-    U16,
-    U32,
-    F32,
-    String,
-    RowKey { foreign: bool },
-    Array(Box<DatFieldType>),
-    Unknown,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum DatValue {
-    Null,
-    Bool(bool),
-    Integer(i64),
-    Unsigned(u64),
-    Float(f64),
-    String(String),
-    Array(Vec<DatValue>),
+impl From<&DatColumnHeader> for DatColumn {
+    fn from(header: &DatColumnHeader) -> Self {
+        Self {
+            name: header.name.clone(),
+            offset: header.offset,
+            field_type: header.field_type.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -78,30 +55,10 @@ pub struct DatTableRows {
     pub rows: Vec<DatRow>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct DatRow(pub Vec<(String, DatValue)>);
-
-impl Serialize for DatRow {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut map = serializer.serialize_map(Some(self.0.len()))?;
-        for (key, value) in &self.0 {
-            map.serialize_entry(key, value)?;
-        }
-        map.end()
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum DatTableError {
-    #[error("invalid datc64 file size: {byte_len}")]
-    InvalidFileSize { byte_len: usize },
-    #[error("datc64 variable-data marker not found")]
-    MissingVariableData,
-    #[error("datc64 fixed data length {fixed_len} is not aligned to row count {row_count}")]
-    MisalignedFixedData { fixed_len: usize, row_count: usize },
+    #[error(transparent)]
+    DatFile(#[from] DatFileError),
     #[error("GraphQL table not found: {0}")]
     MissingTable(String),
     #[error("GraphQL table is not closed: {0}")]
@@ -112,29 +69,15 @@ pub enum DatTableError {
     MissingColumn { table: String, column: String },
     #[error("unsupported column type for {column}: {type_name}")]
     UnsupportedType { column: String, type_name: String },
-    #[error("read past end of {section} at offset {offset} for {byte_len} bytes")]
-    OutOfBounds {
-        section: &'static str,
-        offset: usize,
-        byte_len: usize,
-    },
-    #[error("invalid UTF-16 string at variable offset {offset}")]
-    InvalidUtf16 { offset: usize },
 }
 
 impl DatTableReader {
-    /// Parse a GraphQL dat schema into a reusable table reader.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DatTableError`] when a table or field definition is malformed.
     pub fn from_graphql(schema: &str) -> Result<Self, DatTableError> {
         Ok(Self {
             tables: parse_graphql_schema(schema)?,
         })
     }
 
-    /// Return the parsed schema table names.
     #[must_use]
     pub fn table_names(&self) -> Vec<&str> {
         self.tables
@@ -143,11 +86,6 @@ impl DatTableReader {
             .collect()
     }
 
-    /// Return one parsed GraphQL table.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DatTableError`] when the table is not present in the schema.
     pub fn table(&self, table_name: &str) -> Result<&GraphqlTable, DatTableError> {
         self.tables
             .iter()
@@ -155,25 +93,10 @@ impl DatTableReader {
             .ok_or_else(|| DatTableError::MissingTable(table_name.to_owned()))
     }
 
-    /// Build fixed-row headers for one schema table.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DatTableError`] when a schema type cannot be mapped to a dat
-    /// field layout.
     pub fn headers(&self, table_name: &str) -> Result<Vec<DatColumnHeader>, DatTableError> {
         headers_from_graphql_table(self.table(table_name)?)
     }
 
-    /// Return effective column names for a table.
-    ///
-    /// Anonymous GraphQL `_` columns are expanded into stable names so callers
-    /// can project them by name and serialize rows without duplicate keys.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DatTableError`] when the table is not present or a field layout
-    /// is unsupported.
     pub fn column_names(&self, table_name: &str) -> Result<Vec<String>, DatTableError> {
         Ok(self
             .headers(table_name)?
@@ -182,12 +105,6 @@ impl DatTableReader {
             .collect())
     }
 
-    /// Return effective column names whose values can be decoded by this reader.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DatTableError`] when the table is not present or a field layout
-    /// is unsupported.
     pub fn readable_column_names(&self, table_name: &str) -> Result<Vec<String>, DatTableError> {
         Ok(self
             .headers(table_name)?
@@ -197,14 +114,6 @@ impl DatTableReader {
             .collect())
     }
 
-    /// Read rows from a `.datc64` table.
-    ///
-    /// Passing an empty column list reads every decodable schema column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DatTableError`] when the table, columns, or binary data are
-    /// invalid.
     pub fn read_table(
         &self,
         bytes: &[u8],
@@ -227,47 +136,6 @@ impl DatTableReader {
     }
 }
 
-/// Parse the `.datc64` envelope into fixed-width rows and variable data.
-///
-/// # Errors
-///
-/// Returns [`DatTableError`] when the file is too small, the variable-data
-/// marker is missing, or the fixed section cannot be divided into rows.
-pub fn parse_datc64(bytes: &[u8]) -> Result<DatFile<'_>, DatTableError> {
-    if bytes.len() < ROW_COUNT_SIZE + VDATA_MAGIC.len() {
-        return Err(DatTableError::InvalidFileSize {
-            byte_len: bytes.len(),
-        });
-    }
-    let row_count = usize::try_from(read_u32(bytes, 0, "file")?).unwrap_or(usize::MAX);
-    let body = &bytes[ROW_COUNT_SIZE..];
-    let fixed_len = find_aligned_sequence(body, &VDATA_MAGIC, row_count)
-        .ok_or(DatTableError::MissingVariableData)?;
-    let row_length = if row_count == 0 {
-        0
-    } else {
-        if fixed_len % row_count != 0 {
-            return Err(DatTableError::MisalignedFixedData {
-                fixed_len,
-                row_count,
-            });
-        }
-        fixed_len / row_count
-    };
-    Ok(DatFile {
-        row_count,
-        row_length,
-        data_fixed: &body[..fixed_len],
-        data_variable: &body[fixed_len..],
-    })
-}
-
-/// Parse one table definition from the checked-in GraphQL dat schema.
-///
-/// # Errors
-///
-/// Returns [`DatTableError`] when the table is missing or a field line is
-/// malformed.
 pub fn parse_graphql_table(schema: &str, table_name: &str) -> Result<GraphqlTable, DatTableError> {
     parse_graphql_schema(schema)?
         .into_iter()
@@ -275,12 +143,6 @@ pub fn parse_graphql_table(schema: &str, table_name: &str) -> Result<GraphqlTabl
         .ok_or_else(|| DatTableError::MissingTable(table_name.to_owned()))
 }
 
-/// Parse every table definition from the checked-in GraphQL dat schema.
-///
-/// # Errors
-///
-/// Returns [`DatTableError`] when a table is not closed or a field line is
-/// malformed.
 pub fn parse_graphql_schema(schema: &str) -> Result<Vec<GraphqlTable>, DatTableError> {
     let mut in_table = false;
     let mut table_name = String::new();
@@ -325,12 +187,6 @@ pub fn parse_graphql_schema(schema: &str) -> Result<Vec<GraphqlTable>, DatTableE
     }
 }
 
-/// Build fixed-row headers from a GraphQL table definition.
-///
-/// # Errors
-///
-/// Returns [`DatTableError`] when a schema type cannot be mapped to a dat field
-/// layout.
 pub fn headers_from_graphql_table(
     table: &GraphqlTable,
 ) -> Result<Vec<DatColumnHeader>, DatTableError> {
@@ -351,12 +207,6 @@ pub fn headers_from_graphql_table(
     Ok(headers)
 }
 
-/// Read projected rows from a `.datc64` table using the GraphQL schema.
-///
-/// # Errors
-///
-/// Returns [`DatTableError`] when the table, columns, or binary data are
-/// invalid.
 pub fn read_dat_table(
     bytes: &[u8],
     schema: &str,
@@ -367,6 +217,14 @@ pub fn read_dat_table(
     DatTableReader::from_graphql(schema)?.read_table(bytes, table_name, columns, limit)
 }
 
+#[must_use]
+pub fn table_name_from_path(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.split('.').next())
+        .map(str::to_owned)
+}
+
 fn read_dat_table_with_headers(
     bytes: &[u8],
     table_name: &str,
@@ -374,7 +232,6 @@ fn read_dat_table_with_headers(
     columns: &[String],
     limit: Option<usize>,
 ) -> Result<DatTableRows, DatTableError> {
-    let dat_file = parse_datc64(bytes)?;
     let selected_headers = columns
         .iter()
         .map(|column| {
@@ -395,36 +252,19 @@ fn read_dat_table_with_headers(
             });
         }
     }
-
-    let row_limit = limit.unwrap_or(dat_file.row_count).min(dat_file.row_count);
-    let mut rows = Vec::with_capacity(row_limit);
-    for row_index in 0..row_limit {
-        let mut row = Vec::with_capacity(selected_headers.len() + 1);
-        row.push(("_index".to_owned(), DatValue::Unsigned(row_index as u64)));
-        for header in &selected_headers {
-            row.push((
-                header.name.clone(),
-                read_value(&dat_file, row_index, header.offset, &header.field_type)?,
-            ));
-        }
-        rows.push(DatRow(row));
-    }
+    let selected_columns = selected_headers
+        .iter()
+        .map(|header| DatColumn::from(*header))
+        .collect::<Vec<_>>();
+    let rows = read_projected_rows(bytes, &selected_columns, limit)?;
 
     Ok(DatTableRows {
         table_name: table_name.to_owned(),
-        row_count: dat_file.row_count,
-        row_length: dat_file.row_length,
-        columns: columns.to_vec(),
-        rows,
+        row_count: rows.row_count,
+        row_length: rows.row_length,
+        columns: rows.columns,
+        rows: rows.rows,
     })
-}
-
-#[must_use]
-pub fn table_name_from_path(path: &Path) -> Option<String> {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.split('.').next())
-        .map(str::to_owned)
 }
 
 fn array_type(type_token: &str) -> (bool, &str) {
@@ -528,258 +368,10 @@ fn field_type_for(
     })
 }
 
-fn field_length(field_type: &DatFieldType) -> Result<usize, DatTableError> {
-    Ok(match field_type {
-        DatFieldType::Bool => 1,
-        DatFieldType::I16 | DatFieldType::U16 => 2,
-        DatFieldType::I32 | DatFieldType::U32 | DatFieldType::F32 => 4,
-        DatFieldType::String | DatFieldType::RowKey { foreign: false } => 8,
-        DatFieldType::RowKey { foreign: true } | DatFieldType::Array(_) => 16,
-        DatFieldType::Unknown => {
-            return Err(DatTableError::UnsupportedType {
-                column: "_".to_owned(),
-                type_name: "_".to_owned(),
-            });
-        }
-    })
-}
-
-fn is_readable_field_type(field_type: &DatFieldType) -> bool {
-    match field_type {
-        DatFieldType::Unknown => false,
-        DatFieldType::Array(element_type) => is_readable_field_type(element_type),
-        DatFieldType::Bool
-        | DatFieldType::I16
-        | DatFieldType::I32
-        | DatFieldType::U16
-        | DatFieldType::U32
-        | DatFieldType::F32
-        | DatFieldType::String
-        | DatFieldType::RowKey { .. } => true,
-    }
-}
-
-fn field_type_label(field_type: &DatFieldType) -> String {
-    match field_type {
-        DatFieldType::Bool => "bool".to_owned(),
-        DatFieldType::I16 => "i16".to_owned(),
-        DatFieldType::I32 => "i32".to_owned(),
-        DatFieldType::U16 => "u16".to_owned(),
-        DatFieldType::U32 => "u32".to_owned(),
-        DatFieldType::F32 => "f32".to_owned(),
-        DatFieldType::String => "string".to_owned(),
-        DatFieldType::RowKey { foreign: true } => "foreignrow".to_owned(),
-        DatFieldType::RowKey { foreign: false } => "row".to_owned(),
-        DatFieldType::Array(element_type) => format!("[{}]", field_type_label(element_type)),
-        DatFieldType::Unknown => "_".to_owned(),
-    }
-}
-
-fn read_value(
-    dat_file: &DatFile<'_>,
-    row_index: usize,
-    field_offset: usize,
-    field_type: &DatFieldType,
-) -> Result<DatValue, DatTableError> {
-    let offset = row_index
-        .checked_mul(dat_file.row_length)
-        .and_then(|base| base.checked_add(field_offset))
-        .ok_or(DatTableError::OutOfBounds {
-            section: "fixed",
-            offset: usize::MAX,
-            byte_len: 0,
-        })?;
-    read_one(dat_file, dat_file.data_fixed, "fixed", offset, field_type)
-}
-
-fn read_one(
-    dat_file: &DatFile<'_>,
-    section: &[u8],
-    section_name: &'static str,
-    offset: usize,
-    field_type: &DatFieldType,
-) -> Result<DatValue, DatTableError> {
-    match field_type {
-        DatFieldType::Bool => Ok(DatValue::Bool(read_u8(section, offset, section_name)? != 0)),
-        DatFieldType::I16 => Ok(DatValue::Integer(i64::from(read_i16(
-            section,
-            offset,
-            section_name,
-        )?))),
-        DatFieldType::I32 => Ok(DatValue::Integer(i64::from(read_i32(
-            section,
-            offset,
-            section_name,
-        )?))),
-        DatFieldType::U16 => Ok(DatValue::Unsigned(u64::from(read_u16(
-            section,
-            offset,
-            section_name,
-        )?))),
-        DatFieldType::U32 => Ok(DatValue::Unsigned(u64::from(read_u32(
-            section,
-            offset,
-            section_name,
-        )?))),
-        DatFieldType::F32 => Ok(DatValue::Float(f64::from(read_f32(
-            section,
-            offset,
-            section_name,
-        )?))),
-        DatFieldType::String => {
-            let variable_offset =
-                usize::try_from(read_u32(section, offset, section_name)?).unwrap_or(usize::MAX);
-            read_string(dat_file.data_variable, variable_offset)
-        }
-        DatFieldType::RowKey { .. } => {
-            let row_index = read_u32(section, offset, section_name)?;
-            if row_index == MEM32_NULL {
-                Ok(DatValue::Null)
-            } else {
-                Ok(DatValue::Unsigned(u64::from(row_index)))
-            }
-        }
-        DatFieldType::Array(element_type) => {
-            let array_len =
-                usize::try_from(read_u32(section, offset, section_name)?).unwrap_or(usize::MAX);
-            if array_len == 0 {
-                return Ok(DatValue::Array(Vec::new()));
-            }
-            let variable_offset =
-                usize::try_from(read_u32(section, offset + MEMSIZE, section_name)?)
-                    .unwrap_or(usize::MAX);
-            let element_size = field_length(element_type)?;
-            let mut values = Vec::with_capacity(array_len);
-            for index in 0..array_len {
-                values.push(read_one(
-                    dat_file,
-                    dat_file.data_variable,
-                    "variable",
-                    variable_offset + index * element_size,
-                    element_type,
-                )?);
-            }
-            Ok(DatValue::Array(values))
-        }
-        DatFieldType::Unknown => Err(DatTableError::UnsupportedType {
-            column: "_".to_owned(),
-            type_name: "_".to_owned(),
-        }),
-    }
-}
-
-fn read_string(data_variable: &[u8], offset: usize) -> Result<DatValue, DatTableError> {
-    let mut end =
-        find_zero_sequence(data_variable, 4, offset).ok_or(DatTableError::OutOfBounds {
-            section: "variable",
-            offset,
-            byte_len: 4,
-        })?;
-    while !(end - offset).is_multiple_of(2) {
-        end = find_zero_sequence(data_variable, 4, end + 1).ok_or(DatTableError::OutOfBounds {
-            section: "variable",
-            offset: end + 1,
-            byte_len: 4,
-        })?;
-    }
-    let bytes = checked_slice(data_variable, offset, end - offset, "variable")?;
-    let code_units = bytes
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-        .collect::<Vec<_>>();
-    String::from_utf16(&code_units)
-        .map(DatValue::String)
-        .map_err(|_| DatTableError::InvalidUtf16 { offset })
-}
-
-fn read_u8(data: &[u8], offset: usize, section: &'static str) -> Result<u8, DatTableError> {
-    Ok(*checked_slice(data, offset, 1, section)?
-        .first()
-        .expect("slice length checked"))
-}
-
-fn read_i16(data: &[u8], offset: usize, section: &'static str) -> Result<i16, DatTableError> {
-    Ok(i16::from_le_bytes(
-        checked_slice(data, offset, 2, section)?
-            .try_into()
-            .expect("slice length checked"),
-    ))
-}
-
-fn read_u16(data: &[u8], offset: usize, section: &'static str) -> Result<u16, DatTableError> {
-    Ok(u16::from_le_bytes(
-        checked_slice(data, offset, 2, section)?
-            .try_into()
-            .expect("slice length checked"),
-    ))
-}
-
-fn read_i32(data: &[u8], offset: usize, section: &'static str) -> Result<i32, DatTableError> {
-    Ok(i32::from_le_bytes(
-        checked_slice(data, offset, 4, section)?
-            .try_into()
-            .expect("slice length checked"),
-    ))
-}
-
-fn read_u32(data: &[u8], offset: usize, section: &'static str) -> Result<u32, DatTableError> {
-    Ok(u32::from_le_bytes(
-        checked_slice(data, offset, 4, section)?
-            .try_into()
-            .expect("slice length checked"),
-    ))
-}
-
-fn read_f32(data: &[u8], offset: usize, section: &'static str) -> Result<f32, DatTableError> {
-    Ok(f32::from_le_bytes(
-        checked_slice(data, offset, 4, section)?
-            .try_into()
-            .expect("slice length checked"),
-    ))
-}
-
-fn checked_slice<'a>(
-    data: &'a [u8],
-    offset: usize,
-    byte_len: usize,
-    section: &'static str,
-) -> Result<&'a [u8], DatTableError> {
-    data.get(offset..offset + byte_len)
-        .ok_or(DatTableError::OutOfBounds {
-            section,
-            offset,
-            byte_len,
-        })
-}
-
-fn find_aligned_sequence(data: &[u8], sequence: &[u8], element_count: usize) -> Option<usize> {
-    let mut from_index = 0;
-    loop {
-        let idx = find_sequence(data, sequence, from_index)?;
-        if element_count == 0 || idx % element_count == 0 {
-            return Some(idx);
-        }
-        from_index = idx + 1;
-    }
-}
-
-fn find_zero_sequence(data: &[u8], length: usize, offset: usize) -> Option<usize> {
-    (offset..=data.len().saturating_sub(length))
-        .find(|idx| data[*idx..*idx + length].iter().all(|byte| *byte == 0))
-}
-
-fn find_sequence(data: &[u8], sequence: &[u8], from_index: usize) -> Option<usize> {
-    data.get(from_index..)?
-        .windows(sequence.len())
-        .position(|window| window == sequence)
-        .map(|idx| idx + from_index)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        headers_from_graphql_table, parse_graphql_table, read_dat_table, DatTableReader, DatValue,
-    };
+    use super::{headers_from_graphql_table, parse_graphql_table, read_dat_table, DatTableReader};
+    use crate::dat_file::DatValue;
 
     #[test]
     fn graphql_table_headers_are_stable_for_layout_tables() {

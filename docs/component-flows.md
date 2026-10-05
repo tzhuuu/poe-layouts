@@ -18,8 +18,8 @@ poe-cli
 - `poe-cli` is the debugging and pipeline entrypoint.
 - `poe-ggpk` owns stable Rust APIs for patch versions, cache layout, bundle
   header parsing, index parsing, path hashing, path reps unpacking, and cache
-  verification. It also owns source-specific fetch clients such as
-  `DatSchemaClient`.
+  verification. It also owns generic PoE file readers, plus source-specific
+  fetch clients such as `DatSchemaClient`.
 - `scripts/ooz-decompress-bundle.mjs` is the temporary Oodle bridge. It should
   stay thin: read bundle bytes, decode chunks with `ooz-wasm`, write bytes.
 
@@ -41,9 +41,11 @@ Delivered outcomes:
   `data/topologies.datc64`.
 - GraphQL dat schema fetching from `poe-tool-dev/dat-schema`, validation, and a
   checked-in schema snapshot.
-- Reusable `.datc64` table reading through `DatTableReader`, including stable
-  generated names for anonymous schema fields and broad readable-column
-  inspection.
+- Two-layer table reading:
+  - `dat_file` is the generic PoE file reader for `.datc64` envelopes, primitive
+    field layouts, UTF-16 strings, row keys, arrays, and projected rows.
+  - `dat_table` is the schema-specific layer for GraphQL table definitions,
+    effective column names, table headers, and named projections.
 - CLI inspection commands for the above flows.
 - Rust tests and live-current table validation for the initial layout-critical
   tables.
@@ -129,17 +131,20 @@ paths when listing or extracting files.
 inspect-dat-table
   -> read schema/dat/_Core.gql
   -> DatTableReader parses schema tables once
+  -> dat_table maps GraphQL columns to generic dat_file columns
   -> parse local .datc64 fixed/variable sections
+  -> dat_file decodes primitive values and projected rows
   -> generate stable names for anonymous schema fields
   -> project requested columns or all effective columns
   -> print rows as JSON
 ```
 
 The reader currently targets `.datc64`, which is enough for `WorldAreas` and
-`Topologies`. It supports scalar primitives, row keys, foreign row keys, strings,
-and arrays. The library boundary is `DatTableReader`: scrape/build code should
-construct it once from the checked-in GraphQL schema, then reuse it across raw
-table files after extracting them from the patch CDN.
+`Topologies`. Generic binary reading is isolated in `dat_file`; GraphQL schema
+interpretation is isolated in `dat_table`. The library boundary for table-aware
+scrape/build code is `DatTableReader`: construct it once from the checked-in
+GraphQL schema, then reuse it across raw table files after extracting them from
+the patch CDN.
 
 ## Offline Flow
 
