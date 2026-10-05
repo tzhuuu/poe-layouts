@@ -99,18 +99,18 @@ duplicating campaign scrape behavior.
 ## App Pipeline Control Flow
 
 ```text
-React pipeline panel
+React Scrape tab
   -> Tauri command
   -> poe-ggpk cache / patch CDN API
   -> .poe-layouts/cache
   -> command result rendered inline
 ```
 
-The app supports manual latest-version lookup, named bundle prefetch, and cache
-clear preview/removal. This is deliberately the same layer as the CLI
-`prefetch-bundles` and `clear-cache` commands, so manual UI-driven cache work and
-scripted pipeline work share cache keys, release-line semantics, and clear
-reports.
+The app's Scrape tab supports manual latest-version lookup, named bundle
+prefetch, and cache clear preview/removal. This is deliberately the same layer
+as the CLI `prefetch-bundles` and `clear-cache` commands, so manual UI-driven
+cache work and scripted pipeline work share cache keys, release-line semantics,
+and clear reports.
 
 ## Milestone 1 Outcome: Parser Input Foundation
 

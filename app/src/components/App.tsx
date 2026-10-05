@@ -23,8 +23,11 @@ type LoadState =
   | { status: "ready"; data: LayoutData }
   | { status: "error"; message: string };
 
+type AppTab = "explorer" | "scrape";
+
 export function App() {
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
+  const [activeTab, setActiveTab] = useState<AppTab>("explorer");
   const [query, setQuery] = useState("");
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
 
@@ -69,8 +72,10 @@ export function App() {
   return (
     <LayoutExplorer
       data={loadState.data}
+      activeTab={activeTab}
       query={query}
       selectedZoneId={selectedZoneId}
+      onTabChange={setActiveTab}
       onQueryChange={setQuery}
       onSelectZone={setSelectedZoneId}
     />
@@ -79,16 +84,20 @@ export function App() {
 
 type LayoutExplorerProps = {
   data: LayoutData;
+  activeTab: AppTab;
   query: string;
   selectedZoneId: string | null;
+  onTabChange: (tab: AppTab) => void;
   onQueryChange: (query: string) => void;
   onSelectZone: (zoneId: string) => void;
 };
 
 function LayoutExplorer({
   data,
+  activeTab,
   query,
   selectedZoneId,
+  onTabChange,
   onQueryChange,
   onSelectZone,
 }: LayoutExplorerProps) {
@@ -117,40 +126,34 @@ function LayoutExplorer({
           <span className="versionBadge">{data.gameVersion}</span>
         </header>
 
-        <label className="searchBox">
-          <span>Search</span>
-          <input
-            autoComplete="off"
-            onChange={(event) => onQueryChange(event.target.value)}
-            placeholder="Zone, act, id"
-            value={query}
+        <nav className="paneTabs" aria-label="Sidebar views">
+          <button
+            className={activeTab === "explorer" ? "active" : ""}
+            onClick={() => onTabChange("explorer")}
+            type="button"
+          >
+            Explorer
+          </button>
+          <button
+            className={activeTab === "scrape" ? "active" : ""}
+            onClick={() => onTabChange("scrape")}
+            type="button"
+          >
+            Scrape
+          </button>
+        </nav>
+
+        {activeTab === "explorer" ? (
+          <ExplorerPane
+            filteredZones={filteredZones}
+            query={query}
+            selectedZone={selectedZone}
+            onQueryChange={onQueryChange}
+            onSelectZone={onSelectZone}
           />
-        </label>
-
-        <div className="actFilters" aria-label="Acts">
-          {[1, 2, 3, 4, 5].map((act) => (
-            <span key={act}>Act {act}</span>
-          ))}
-        </div>
-
-        <PipelineControls defaultPatchVersion={data.gameVersion} />
-
-        <section className="zoneList" aria-label="Zones">
-          {filteredZones.map((zone) => (
-            <button
-              className={zone.id === selectedZone?.id ? "zoneRow active" : "zoneRow"}
-              key={zone.id}
-              onClick={() => onSelectZone(zone.id)}
-              type="button"
-            >
-              <span>
-                <strong>{zone.name || zone.id}</strong>
-                <small>{zone.id}</small>
-              </span>
-              <em>Act {zone.act}</em>
-            </button>
-          ))}
-        </section>
+        ) : (
+          <ScrapePane data={data} stats={stats} />
+        )}
       </aside>
 
       <section className="workspace">
@@ -175,6 +178,90 @@ function LayoutExplorer({
         <TerrainTable terrainFiles={selectedTerrain} />
       </section>
     </main>
+  );
+}
+
+function ExplorerPane({
+  filteredZones,
+  query,
+  selectedZone,
+  onQueryChange,
+  onSelectZone,
+}: {
+  filteredZones: ZoneSummary[];
+  query: string;
+  selectedZone: ZoneSummary | null;
+  onQueryChange: (query: string) => void;
+  onSelectZone: (zoneId: string) => void;
+}) {
+  return (
+    <section className="tabPane explorerTab">
+      <label className="searchBox">
+        <span>Search</span>
+        <input
+          autoComplete="off"
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="Zone, act, id"
+          value={query}
+        />
+      </label>
+
+      <div className="actFilters" aria-label="Acts">
+        {[1, 2, 3, 4, 5].map((act) => (
+          <span key={act}>Act {act}</span>
+        ))}
+      </div>
+
+      <section className="zoneList" aria-label="Zones">
+        {filteredZones.map((zone) => (
+          <button
+            className={zone.id === selectedZone?.id ? "zoneRow active" : "zoneRow"}
+            key={zone.id}
+            onClick={() => onSelectZone(zone.id)}
+            type="button"
+          >
+            <span>
+              <strong>{zone.name || zone.id}</strong>
+              <small>{zone.id}</small>
+            </span>
+            <em>Act {zone.act}</em>
+          </button>
+        ))}
+      </section>
+    </section>
+  );
+}
+
+function ScrapePane({
+  data,
+  stats,
+}: {
+  data: LayoutData;
+  stats: ReturnType<typeof terrainStats>;
+}) {
+  return (
+    <section className="tabPane scrapeTab">
+      <section className="scrapeSummary" aria-label="Current scrape artifact">
+        <div>
+          <span>Scope</span>
+          <strong>{data.scope}</strong>
+        </div>
+        <div>
+          <span>Patch</span>
+          <strong>{data.gameVersion}</strong>
+        </div>
+        <div>
+          <span>Zones</span>
+          <strong>{data.zones.length}</strong>
+        </div>
+        <div>
+          <span>Missing</span>
+          <strong>{stats.missing}</strong>
+        </div>
+      </section>
+
+      <PipelineControls defaultPatchVersion={data.gameVersion} />
+    </section>
   );
 }
 
