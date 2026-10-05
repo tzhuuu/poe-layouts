@@ -9,6 +9,13 @@ import {
   type TerrainFileSummary,
   type ZoneSummary,
 } from "../data/layoutDatabase";
+import {
+  clearCache,
+  latestPatchVersions,
+  prefetchBundles,
+  type CacheClearReport,
+  type CacheManifest,
+} from "../data/pipelineApi";
 import { PixiLayoutPreview } from "../render/PixiLayoutPreview";
 
 type LoadState =
@@ -126,6 +133,8 @@ function LayoutExplorer({
           ))}
         </div>
 
+        <PipelineControls defaultPatchVersion={data.gameVersion} />
+
         <section className="zoneList" aria-label="Zones">
           {filteredZones.map((zone) => (
             <button
@@ -167,6 +176,193 @@ function LayoutExplorer({
       </section>
     </main>
   );
+}
+
+type PipelineActionState =
+  | { status: "idle" }
+  | { status: "running"; label: string }
+  | { status: "ok"; label: string; detail: string }
+  | { status: "error"; label: string; detail: string };
+
+function PipelineControls({ defaultPatchVersion }: { defaultPatchVersion: string }) {
+  const [patchVersion, setPatchVersion] = useState(defaultPatchVersion);
+  const [releaseLine, setReleaseLine] = useState("");
+  const [bundlesText, setBundlesText] = useState(
+    "_.index.bin\nTiny_11.bundle.bin\nTiny_51.bundle.bin",
+  );
+  const [refresh, setRefresh] = useState(false);
+  const [actionState, setActionState] = useState<PipelineActionState>({
+    status: "idle",
+  });
+
+  const runAction = async <T,>(
+    label: string,
+    action: () => Promise<T>,
+    summarize: (result: T) => string,
+  ) => {
+    setActionState({ status: "running", label });
+    try {
+      const result = await action();
+      setActionState({ status: "ok", label, detail: summarize(result) });
+    } catch (error: unknown) {
+      setActionState({
+        status: "error",
+        label,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const bundles = () =>
+    bundlesText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+  return (
+    <section className="pipelinePane" aria-label="Pipeline controls">
+      <header>
+        <span>Pipeline</span>
+        <label>
+          <input
+            checked={refresh}
+            onChange={(event) => setRefresh(event.target.checked)}
+            type="checkbox"
+          />
+          Refresh
+        </label>
+      </header>
+
+      <div className="pipelineGrid">
+        <label>
+          <span>Patch</span>
+          <input
+            autoComplete="off"
+            onChange={(event) => setPatchVersion(event.target.value)}
+            placeholder="latest"
+            value={patchVersion}
+          />
+        </label>
+        <label>
+          <span>Release</span>
+          <input
+            autoComplete="off"
+            onChange={(event) => setReleaseLine(event.target.value)}
+            placeholder="latest line"
+            value={releaseLine}
+          />
+        </label>
+      </div>
+
+      <label className="bundleList">
+        <span>Bundles</span>
+        <textarea
+          onChange={(event) => setBundlesText(event.target.value)}
+          spellCheck={false}
+          value={bundlesText}
+        />
+      </label>
+
+      <div className="pipelineButtons">
+        <button
+          onClick={() =>
+            runAction("Latest", latestPatchVersions, (result) => {
+              setPatchVersion(result.poe);
+              return `PoE1 ${result.poe}`;
+            })
+          }
+          type="button"
+        >
+          Latest
+        </button>
+        <button
+          onClick={() =>
+            runAction(
+              "Fetch",
+              () =>
+                prefetchBundles({
+                  patchVersion,
+                  bundles: bundles(),
+                  refresh,
+                }),
+              summarizeManifest,
+            )
+          }
+          type="button"
+        >
+          Fetch
+        </button>
+        <button
+          onClick={() =>
+            runAction(
+              "Preview",
+              () =>
+                clearCache({
+                  releaseLine,
+                  patchVersion,
+                  dryRun: true,
+                }),
+              summarizeClearReport,
+            )
+          }
+          type="button"
+        >
+          Preview
+        </button>
+        <button
+          className="dangerButton"
+          onClick={() =>
+            runAction(
+              "Clear",
+              () =>
+                clearCache({
+                  releaseLine,
+                  patchVersion,
+                  dryRun: false,
+                }),
+              summarizeClearReport,
+            )
+          }
+          type="button"
+        >
+          Clear
+        </button>
+      </div>
+
+      {actionState.status !== "idle" && (
+        <p className={`pipelineStatus ${actionState.status}`}>
+          <strong>{actionState.label}</strong>
+          <span>
+            {actionState.status === "running" ? "Running" : actionState.detail}
+          </span>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function summarizeManifest(manifest: CacheManifest) {
+  const byteCount = manifest.entries.reduce(
+    (total, entry) => total + entry.byte_len,
+    0,
+  );
+  return `${manifest.namespace}: ${manifest.entries.length} bundles, ${formatBytes(byteCount)}`;
+}
+
+function summarizeClearReport(report: CacheClearReport) {
+  const size = formatBytes(report.byte_len);
+  const action = report.removed ? "removed" : report.existed ? "found" : "missing";
+  return `${action} ${report.file_count} files, ${size}`;
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
 function Metric({ label, value }: { label: string; value: number | string }) {

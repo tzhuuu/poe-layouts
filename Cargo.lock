@@ -2553,7 +2553,9 @@ dependencies = [
 name = "poe-layouts-tauri"
 version = "0.1.0"
 dependencies = [
+ "poe-ggpk",
  "poe-layouts-core",
+ "serde",
  "tauri",
  "tauri-build",
 ]

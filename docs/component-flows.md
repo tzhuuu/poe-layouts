@@ -41,6 +41,9 @@ poe-cli
   build tool only; there is no hosted backend service in the product shape.
 - Tauri commands should expose layout-domain operations to React/Pixi, not raw
   CDN, bundle, `.datc64`, or GraphQL schema mechanics.
+- The Tauri app may expose local pipeline controls for manual iteration, but
+  those controls should call the same Rust cache and patch CDN APIs as the CLI
+  rather than duplicating fetch or clear behavior in TypeScript.
 
 ## `poe-ggpk` Source Layout
 
@@ -92,6 +95,22 @@ tauri_api.rs      optional DTO helpers for local app commands
 
 The important boundary is that CLI and Tauri should call this crate rather than
 duplicating campaign scrape behavior.
+
+## App Pipeline Control Flow
+
+```text
+React pipeline panel
+  -> Tauri command
+  -> poe-ggpk cache / patch CDN API
+  -> .poe-layouts/cache
+  -> command result rendered inline
+```
+
+The app supports manual latest-version lookup, named bundle prefetch, and cache
+clear preview/removal. This is deliberately the same layer as the CLI
+`prefetch-bundles` and `clear-cache` commands, so manual UI-driven cache work and
+scripted pipeline work share cache keys, release-line semantics, and clear
+reports.
 
 ## Milestone 1 Outcome: Parser Input Foundation
 
