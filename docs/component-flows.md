@@ -48,7 +48,7 @@ pather-cli
 - `pather-core` owns milestone-2 layout-domain APIs. It consumes
   `PatchClient`, `GraphqlDatSchema`, typed dat table projections, and a
   caller-provided `BundleDecompressor` to produce raw campaign scrape manifests
-  and app-facing FlatBuffers artifacts.
+  high-level graph JSON, and app-facing FlatBuffers artifacts.
 - `scripts/ooz-decompress-bundle.mjs` is the temporary Oodle bridge. It should
   stay thin: read bundle bytes, decode chunks with `ooz-wasm`, write bytes.
 - The visualizer remains local-first. Vite is a frontend development and build
@@ -59,6 +59,9 @@ pather-cli
 - The browser app should stay focused on browsing and rendering layout artifacts.
   Pipeline, cache, DAT schema, and raw GGPK exploration commands live in
   `pather-cli` until we need a productized local control surface.
+- The browser can request a parsed graph for an extracted `.dgr` file through
+  `pather-layouts-server`; `pather-core` owns the text/UTF-16 DGR parser and the
+  server only handles local file routing.
 
 ## `poe-content` Source Layout
 
@@ -127,6 +130,11 @@ web_api.rs        optional DTO helpers for local web commands
 The important boundary is that CLI and web handlers should call this crate rather than
 duplicating campaign scrape behavior.
 
+The scrape writes `high-level-graph.json` beside `manifest.json`. This graph is
+the current presentation and handoff layer before room-level terrain parsing: it
+links acts, campaign areas, referenced topology rows, table-declared graph/TSI
+files, and the terrain folders used to build the raw corpus.
+
 ## Browser App Data Flow
 
 ```text
@@ -136,10 +144,27 @@ browser app
   -> generated FlatBuffers TypeScript reader
   -> React/Pixi layout explorer
 
+rendering pipeline or AI helper
+  -> .poe-layouts/raw/campaign-acts-1-5/high-level-graph.json
+  -> act/area/topology/terrain-file graph
+  -> extracted raw corpus under .poe-layouts/raw/campaign-acts-1-5/files
+
 browser or AI helper
   -> /api/raw-files?prefix=metadata/terrain/act1/area1
   -> /raw-files/metadata/terrain/act1/area1/example.dgr
   -> extracted bytes from .poe-layouts/raw/campaign-acts-1-5/files
+
+browser app
+  -> /api/layout-graph?path=metadata/terrain/act1/area1/graphs/example.dgr
+  -> pather-core DGR parser
+  -> node/edge graph JSON rendered in the Layouts tab
+
+browser app
+  -> POST /api/layout-rooms { paths: extracted graph candidates for the selected zone }
+  -> server reads and parses each distinct DGR/TGR path
+  -> pather-core summarize_layout_rooms
+  -> room-label list with distinct-layout counts and node indices per layout
+  -> searchable room picker, selected ARM variant, and room details workspace
 ```
 
 The app reads the compiled FlatBuffers artifact directly. Local scrape, cache,
@@ -147,11 +172,137 @@ and live CDN operations are intentionally kept in `pather-cli` while the data
 model is still moving. The server may browse and serve files that the pipeline
 has already extracted into the local raw corpus.
 
+The room list groups exact nonempty graph node labels. These labels constrain
+room selection; they are not resolved `.arm` room assets. Each graph path counts
+once per label, even when several nodes use that label. The list is scoped to
+the selected zone's extracted, table-declared graph candidates. Failed files
+and parser warnings are surfaced in the list; the denominator counts graphs
+that parsed successfully. Counts describe template presence, not spawn odds.
+Room data lives in the Rooms tab beside Layouts and Files. Room search and
+selection persist across tab changes. Selecting a room or ARM variant does not
+highlight graph nodes or change the selected layout. The Layouts tab gives the
+graph the full remaining workspace height. A separate layout picker beside the workspace
+tabs opens downward on hover or click. It highlights the current graph,
+scrolls long candidate lists, disables unavailable graphs, and closes after
+selection. It remains available in the Files tab. In the Rooms tab, the room
+selection/search picker replaces the layout picker on the same row. Shared
+workspace state preserves both selections when switching tabs.
+
+The Rooms workspace uses that searchable hover/click picker beside the tabs,
+with a large left preview and a scrollable right inspector below.
+`POST /api/layout-rooms` also calls
+`pather-core inspect_layout_rooms` for the layouts' distinct master sources:
+graph MasterFile -> TSI RoomSet -> active, deduplicated ARM references -> ARM
+asset-table header, dimensions, version, and internal label. The UI joins by
+exact internal label and deduplicates variants across room sets. Disabled
+room-set lines are excluded; missing files and unsupported headers produce
+partial-coverage warnings. Candidates are possibilities, not spawn odds or a
+claim that every ARM satisfies all graph tags/rotation constraints.
+Reported sizes are the numeric ARM header pair immediately before the label;
+they are not inferred world-space bounds or decoded terrain geometry.
+
+`GET /api/room-variants?layout=...` exposes the same catalog for one graph.
+`app/src/render/RoomPreview.tsx` is the renderer integration boundary, receiving
+the selected `RoomVariant` (including its logical ARM path) and room label.
+It currently displays an explicit pending-render state; no fabricated room
+geometry is drawn. The inspector shows selectable ARM variants, dimensions,
+version, asset-entry count, source paths, distinct-layout counts, and node
+occurrences in the displayed and other candidate graphs.
+
+Node colors are presentation heuristics derived from labels and metadata tags:
+waypoint, side area, boss, exit, entrance, other named room, structural node,
+and trailing DGR `V` (void) flag. Disabled metadata tags do not assign a role.
+The graph preserves the raw label, rotation, and metadata in hover titles.
+Rooms with boss labels or active boss metadata also get a small linked Boss
+marker, independently of their primary color role. The room catalog now also
+reads ARM spawn-hook rows with three finite numeric coordinates/rotation and
+the exact case-insensitive `mapboss` tag, ignoring asset names and disabled
+hooks. The graph API joins these active ARM candidates by internal room label
+and returns `node_bosses` with source paths, tags, and candidate counts. Such
+nodes display a Map boss satellite even when their graph label is `camp`.
+Hover titles describe candidate coverage, not guaranteed runtime spawns or a
+resolved monster identity. Missing ARM files produce boss-coverage warnings.
+Auto-fit includes the markers; parsed graph node and edge counts are unchanged.
+
+Outdoor graph previews default to a 24-unit grid overlay, toggleable in the
+graph toolbar. Classification comes from the selected graph's active RoomSet,
+not its suffix. The grid shares the graph's raw-coordinate transform, scale,
+origin, and 45-degree counterclockwise rotation. It moves and zooms with the
+graph. This is a visual ruler over authored graph coordinates, not decoded
+terrain cells: node positions are not assumed to be exact multiples of 24,
+snapped, or replaced with fabricated grid nodes. Indoor and unknown layouts
+do not show the grid or its toggle.
+
+## Layout Environment Flow
+
+```text
+Acts 1-5 scrape (or pather classify-layout-environments for an existing cache)
+  -> pather-core layout_environment
+  -> graph MasterFile header -> TSI RoomSet field
+  -> active room-set filename determines indoor/outdoor
+  -> manifest.json layout_environments and layout_environment_warnings
+  -> layout-environments.json beside the raw manifest
+  -> GET /api/layout-environments
+  -> environment badge beside the zone name in the workspace header
+```
+
+Classification follows the active TSI room set: `generate.rs` and
+`generate_*.rs` mean Indoor; `room_tiles.rs` and `room_nodes.rs` mean Outdoor.
+Missing or unrecognized RoomSet fields remain Unknown. The referenced room-set
+file need not be extracted to classify its filename. Boundary types, local
+`rooms/` inventory, graph suffixes, and area names do not affect the category.
+The classifier no longer emits Mixed.
+
+Each classification retains the resolved master/room-set paths, raw outer
+ground type, terrain-root file flags, and evidence strings. The classification
+index is versioned with the cached patch; the app rejects a mismatched patch.
+The zone badge uses its declared TSI classification, falling back to the first
+extracted layout's classification when that TSI is unavailable.
+This adds a JSON artifact without changing the existing FlatBuffers schema.
+
+## Layout Entrance Flow
+
+```text
+Acts 1-5 scrape (or pather scrape-layout-transitions for an existing cache)
+  -> WorldAreas Id, Name, ordered Connections_WorldAreasKeys
+  -> graph active entranceN metadata tags
+  -> connection slot N-1 -> destination WorldAreas row
+  -> TSI active RoomSet -> extracted ARM candidates by internal room label
+  -> door entity references from placed room objects
+  -> manifest layout_transitions + layout_transition_warnings
+  -> layout-transitions.json
+  -> GET /api/layout-graph?path=...&zone=...
+  -> destination labels and complete evidence in graph hover titles
+```
+
+Entrance numbering is one-based. The connection array is not sorted or
+deduplicated: two entrance slots can lead to the same zone. Only the declared
+graph metadata tag block is inspected, and disabled tags do not resolve.
+Destination lookup is zone-specific because a layout can be reused by different
+WorldAreas rows. Missing slots remain Unresolved rather than becoming doors.
+
+Door evidence is a placed entity path named Door, ending in Door, or starting
+with Door_; decorative `.ao` filenames are not used to classify it. Active RS
+entries are joined to ARM internal labels, not filenames. Disabled RS entries
+are ignored. Since a room label may select several ARM variants, these are
+possible door candidates, not a claim that every generated room has that door.
+Missing shared-room dependencies produce partial-coverage warnings. The scan
+does not yet follow object inheritance or scripts to identify every door type.
+
+Ancient Pyramid graphs under `act2/area14level3` retain numbered entrance tags
+but mark their routing Deferred. Their internal storey/subgraph numbering needs
+separate handling before joining those tags to external zone connections.
+The server rejects entrance indexes from a different dataset patch. Raw room
+labels, metadata, and transition evidence remain available in hover titles.
+
 The Acts 1-5 scrape treats table-declared `WorldAreas.TSIFile` and
 `Topologies.DGRFile` values as first-order terrain candidates only when the
 normalized logical path exists in the patch index. It does not invent sibling
 `.arm` or `.dgr` paths; those should come from parsing graph/terrain metadata
 files in a later pass.
+
+Map-format reverse-engineering notes, including current terrain-root
+indoor/outdoor heuristics, live in `docs/map-format-notes.md`.
 
 ## Milestone 1 Outcome: Parser Input Foundation
 

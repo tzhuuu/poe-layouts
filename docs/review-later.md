@@ -41,6 +41,10 @@ each CLI command perform ad hoc network work.
     required table names.
 - `docs/component-flows.md`
   - Current flow docs. Keep this updated when the client layer appears.
+- `docs/map-format-notes.md`
+  - Current map-format observations and validation notes. Keep tentative
+    indoor/outdoor generation heuristics here until the parser can derive them
+    from graph/TSI/room data.
 
 ## Proposed Shape
 
