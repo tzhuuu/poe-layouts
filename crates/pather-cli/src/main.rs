@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use pather_core::{
-    inspect_layout_database, scrape_campaign_acts_one_to_five as scrape_campaign_core,
-    CampaignScrapeRequest,
+    inspect_layout_database, refresh_layout_environments, refresh_layout_transitions,
+    scrape_campaign_acts_one_to_five as scrape_campaign_core, CampaignScrapeRequest,
 };
 use poe_content::{
     fetch_latest_patch_versions, parse_bundle_header, parse_index_bundle, root_directories,
@@ -293,6 +293,19 @@ enum Command {
         #[arg(long)]
         ooz_script: Option<PathBuf>,
     },
+    /// Classify indoor/outdoor layout environments from an existing raw cache.
+    ClassifyLayoutEnvironments {
+        /// Existing raw campaign scrape directory. No network access is required.
+        #[arg(long, default_value = ".poe-layouts/raw/campaign-acts-1-5")]
+        raw_dir: PathBuf,
+    },
+    /// Resolve layout entrances and door candidates from an existing raw cache.
+    ScrapeLayoutTransitions {
+        #[arg(long, default_value = ".poe-layouts/raw/campaign-acts-1-5")]
+        raw_dir: PathBuf,
+        #[arg(long, default_value = DEFAULT_DAT_SCHEMA_PATH)]
+        schema: PathBuf,
+    },
     /// Read and summarize an app-facing `FlatBuffers` layout database.
     InspectLayoutDb {
         /// Input `layouts.bin` file.
@@ -502,6 +515,54 @@ fn main() -> anyhow::Result<()> {
         Command::InspectLayoutDb { input } => {
             let input = workspace_path(&input);
             inspect_layout_db(&input)
+        }
+        Command::ScrapeLayoutTransitions { raw_dir, schema } => {
+            let raw_dir = workspace_path(&raw_dir);
+            let index = refresh_layout_transitions(&raw_dir, &workspace_path(&schema))?;
+            let mut counts = std::collections::BTreeMap::new();
+            for transition in index
+                .layouts
+                .iter()
+                .flat_map(|layout| &layout.nodes)
+                .flat_map(|node| &node.transitions)
+            {
+                *counts
+                    .entry(format!("{:?}", transition.kind))
+                    .or_insert(0usize) += 1;
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "patch_version": index.patch_version,
+                    "output": raw_dir.join("layout-transitions.json"),
+                    "layout_count": index.layouts.len(),
+                    "transition_counts": counts,
+                    "warnings": index.warnings,
+                }))?
+            );
+            Ok(())
+        }
+        Command::ClassifyLayoutEnvironments { raw_dir } => {
+            let raw_dir = workspace_path(&raw_dir);
+            let index = refresh_layout_environments(&raw_dir)?;
+            let mut counts = std::collections::BTreeMap::new();
+            for layout in &index.layouts {
+                if layout.logical_path.ends_with(".dgr") || layout.logical_path.ends_with(".tgr") {
+                    *counts
+                        .entry(format!("{:?}", layout.environment))
+                        .or_insert(0usize) += 1;
+                }
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "patch_version": index.patch_version,
+                    "output": raw_dir.join("layout-environments.json"),
+                    "graph_counts": counts,
+                    "warnings": index.warnings,
+                }))?
+            );
+            Ok(())
         }
     }
 }
@@ -1201,11 +1262,16 @@ fn scrape_campaign_acts_one_to_five(options: ScrapeCampaignOptions<'_>) -> anyho
             "patch_version": manifest.patch_version,
             "release_line": manifest.release_line,
             "manifest_path": output.manifest_path,
+            "high_level_graph_path": output.high_level_graph_path,
+            "layout_environments_path": output.layout_environments_path,
+            "layout_transitions_path": output.layout_transitions_path,
             "layout_db_path": output.layout_db_path,
             "counts": {
                 "selected_areas": manifest.selected_areas.len(),
+                "selected_topologies": manifest.selected_topologies.len(),
                 "candidate_files": manifest.candidate_files.len(),
                 "terrain_folders": manifest.terrain_folders.len(),
+                "layout_environments": manifest.layout_environments.len(),
                 "extracted_files": manifest.extracted_files.len(),
                 "folder_files": manifest.folder_files.len(),
                 "missing_files": manifest.missing_files.len(),

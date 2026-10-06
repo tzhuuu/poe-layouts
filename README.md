@@ -178,6 +178,7 @@ The default outputs are:
 
 ```text
 .poe-layouts/raw/campaign-acts-1-5/manifest.json
+.poe-layouts/raw/campaign-acts-1-5/high-level-graph.json
 app/public/data/layouts.bin
 ```
 
@@ -188,6 +189,12 @@ corpus lands under:
 ```text
 .poe-layouts/raw/campaign-acts-1-5/files
 ```
+
+The high-level graph is the handoff artifact for early layout browsing and room
+rendering work. It contains stable nodes for acts, areas, referenced topologies,
+terrain folders, and table-declared terrain files, plus typed edges such as
+`contains_area`, `uses_topology`, `declares_graph`, `declares_tsi`, and
+`groups_terrain_file`.
 
 Inspect the generated app artifact:
 

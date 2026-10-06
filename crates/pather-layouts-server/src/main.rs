@@ -8,7 +8,10 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use pather_core::{scrape_campaign_acts_one_to_five, CampaignScrapeRequest};
+use pather_core::{
+    parse_dgr_layout_graph, scrape_campaign_acts_one_to_five, summarize_layout_rooms,
+    CampaignScrapeRequest, LayoutRoomSummary,
+};
 use pather_schema::{poe_layouts, root_layout_database};
 use poe_content::{
     fetch_latest_patch_versions, BundleDecompressor, BundleSlice, BundleSliceOutput, CacheMode,
@@ -143,6 +146,15 @@ fn route(request: &HttpRequest, config: &ServerConfig) -> HttpResponse {
         ("GET", "/version") | ("GET", "/api/version") => json_response(version(config)),
         ("GET", "/zone_names") | ("GET", "/api/zone_names") => json_response(zone_names(config)),
         ("GET", "/data/layouts.bin") => file_response(&config.workspace.layout_db_path),
+        ("GET", "/api/layout-graph") => json_response(layout_graph(config, request.query_params())),
+        ("POST", "/api/layout-rooms") => json_response(layout_rooms(config, request.json_body())),
+        ("GET", "/api/room-variants") => json_response(room_variants(config, request.query_params())),
+        ("GET", "/api/layout-environments") => file_response(
+            &config
+                .workspace
+                .campaign_raw_dir
+                .join("layout-environments.json"),
+        ),
         ("GET", "/api/raw-files") => json_response(raw_files(config, request.query_params())),
         ("GET", "/api/latest_patch_versions") => {
             json_response(fetch_latest_patch_versions().map_err(WebError::from))
@@ -166,6 +178,9 @@ fn route(request: &HttpRequest, config: &ServerConfig) -> HttpResponse {
             let logical_path = percent_decode(&request.path["/raw-files/".len()..]);
             raw_file_response(config, &logical_path)
         }
+        _ if request.path.starts_with("/api/") => json_response::<()>(Err(WebError::NotFound(
+            format!("api route not found: {}", request.path),
+        ))),
         _ if request.method == "GET" => static_response(request, config),
         _ => HttpResponse::text(405, "method not allowed"),
     }
@@ -296,6 +311,149 @@ fn raw_file_response(config: &ServerConfig, logical_path: &str) -> HttpResponse 
         Ok(path) => file_response(&path),
         Err(error) => json_response::<()>(Err(error)),
     }
+}
+
+#[derive(Serialize)]
+struct LayoutGraphResponse {
+    #[serde(flatten)]
+    graph: pather_core::DgrLayoutGraph,
+    node_bosses: Vec<pather_core::LayoutNodeBosses>,
+}
+
+fn layout_graph(
+    config: &ServerConfig,
+    query_params: Vec<(String, String)>,
+) -> Result<LayoutGraphResponse, WebError> {
+    let logical_path = query_value(&query_params, "path")
+        .ok_or_else(|| WebError::BadRequest("missing layout graph path".to_owned()))?;
+    let mut graph = read_layout_graph(config, &logical_path)?;
+    if let Some(zone_id) = query_value(&query_params, "zone") {
+        let index_path = config
+            .workspace
+            .campaign_raw_dir
+            .join("layout-transitions.json");
+        if index_path.exists() {
+            let bytes = fs::read(&index_path).map_err(|source| WebError::File {
+                path: index_path.clone(),
+                source,
+            })?;
+            let index: pather_core::LayoutTransitionIndex = serde_json::from_slice(&bytes)
+                .map_err(|error| {
+                    WebError::BadRequest(format!("invalid layout transition index: {error}"))
+                })?;
+            let data = read_layout_data(config)?;
+            if data.game_version != index.patch_version {
+                graph
+                    .warnings
+                    .push("Entrance index patch does not match the current scrape".to_owned());
+            } else if let Some(layout) = index.layouts.into_iter().find(|layout| {
+                layout.zone_id == zone_id && layout.logical_path == graph.logical_path
+            }) {
+                graph.node_transitions = layout.nodes;
+                graph.warnings.extend(layout.warnings);
+            }
+        } else {
+            graph
+                .warnings
+                .push("Entrance data has not been scraped for this cache".to_owned());
+        }
+    }
+    let catalog = pather_core::inspect_layout_rooms(&config.workspace.campaign_files_dir(), &graph);
+    let node_bosses = pather_core::resolve_room_bosses(&graph, &catalog);
+    graph.warnings.extend(catalog.warnings.into_iter().map(|warning| format!("Boss coverage: {warning}")));
+    Ok(LayoutGraphResponse { graph, node_bosses })
+}
+
+fn read_layout_graph(
+    config: &ServerConfig,
+    logical_path: &str,
+) -> Result<pather_core::DgrLayoutGraph, WebError> {
+    let logical_path = normalize_logical_path(logical_path);
+    let is_layout_graph = logical_path.rsplit_once('.').is_some_and(|(_, extension)| {
+        extension.eq_ignore_ascii_case("dgr") || extension.eq_ignore_ascii_case("tgr")
+    });
+    if !is_layout_graph {
+        return Err(WebError::BadRequest(format!(
+            "layout graph path must be a .dgr or .tgr file: {logical_path}"
+        )));
+    }
+    let path = raw_file_path(&config.workspace.campaign_files_dir(), &logical_path)?;
+    let bytes = fs::read(&path).map_err(|source| WebError::File {
+        path: path.clone(),
+        source,
+    })?;
+    parse_dgr_layout_graph(&logical_path, &bytes).map_err(WebError::from)
+}
+
+#[derive(Deserialize)]
+struct LayoutRoomsRequest {
+    paths: Vec<String>,
+}
+
+fn room_variants(
+    config: &ServerConfig,
+    params: Vec<(String, String)>,
+) -> Result<pather_core::RoomCatalog, WebError> {
+    let path = query_value(&params, "layout")
+        .ok_or_else(|| WebError::BadRequest("missing layout path".to_owned()))?;
+    let graph = read_layout_graph(config, &path)?;
+    Ok(pather_core::inspect_layout_rooms(&config.workspace.campaign_files_dir(), &graph))
+}
+
+#[derive(Serialize)]
+struct LayoutRoomsResponse {
+    requested_layout_count: usize,
+    parsed_layout_count: usize,
+    rooms: Vec<LayoutRoomSummary>,
+    warnings: Vec<String>,
+    room_catalogs: Vec<pather_core::RoomCatalog>,
+}
+
+fn layout_rooms(
+    config: &ServerConfig,
+    request: Result<LayoutRoomsRequest, WebError>,
+) -> Result<LayoutRoomsResponse, WebError> {
+    let mut paths = request?
+        .paths
+        .into_iter()
+        .map(|path| normalize_logical_path(&path))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    let mut graphs = Vec::new();
+    let mut warnings = Vec::new();
+    for path in &paths {
+        match read_layout_graph(config, path) {
+            Ok(graph) => {
+                warnings.extend(
+                    graph
+                        .warnings
+                        .iter()
+                        .map(|warning| format!("{path}: {warning}")),
+                );
+                graphs.push(graph);
+            }
+            Err(error) => warnings.push(format!("{path}: {error}")),
+        }
+    }
+    let mut masters = std::collections::BTreeSet::new();
+    let room_catalogs = graphs
+        .iter()
+        .filter(|graph| {
+            let source = graph.logical_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+            masters.insert((source.to_owned(), graph.master_file.clone()))
+        })
+        .map(|graph| {
+            pather_core::inspect_layout_rooms(&config.workspace.campaign_files_dir(), graph)
+        })
+        .collect();
+    Ok(LayoutRoomsResponse {
+        requested_layout_count: paths.len(),
+        parsed_layout_count: graphs.len(),
+        rooms: summarize_layout_rooms(&graphs),
+        warnings,
+        room_catalogs,
+    })
 }
 
 fn prefetch_bundles(

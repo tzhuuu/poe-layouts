@@ -17,6 +17,19 @@ use poe_dat::{
 };
 use serde::{Deserialize, Serialize};
 
+mod layout_environment;
+mod layout_transitions;
+mod room_catalog;
+pub use room_catalog::{inspect_layout_rooms, resolve_room_bosses, LayoutNodeBosses, RoomCatalog, RoomVariant};
+pub use layout_environment::{
+    refresh_layout_environments, scrape_layout_environments, LayoutEnvironment,
+    LayoutEnvironmentIndex, LayoutEnvironmentSummary,
+};
+pub use layout_transitions::{
+    refresh_layout_transitions, scrape_layout_transitions, LayoutNodeTransitions, LayoutTransition,
+    LayoutTransitionIndex, LayoutTransitionKind, TransitionZone, ZoneLayoutTransitions,
+};
+
 pub const CAMPAIGN_ACTS_ONE_TO_FIVE_SCOPE: &str = "campaign-acts-1-5";
 const EXCLUDED_TERRAIN_PREFIXES: &[&str] = &["metadata/terrain/leagues/"];
 
@@ -34,6 +47,9 @@ pub struct CampaignScrapeRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct CampaignScrapeOutput {
     pub manifest_path: PathBuf,
+    pub high_level_graph_path: PathBuf,
+    pub layout_environments_path: PathBuf,
+    pub layout_transitions_path: PathBuf,
     pub layout_db_path: Option<PathBuf>,
     pub manifest: CampaignScrapeManifest,
 }
@@ -47,8 +63,13 @@ pub struct CampaignScrapeManifest {
     pub out_dir: PathBuf,
     pub tables: Vec<ExtractedLogicalFile>,
     pub selected_areas: Vec<CampaignAreaSummary>,
+    pub selected_topologies: Vec<TopologySummary>,
     pub candidate_files: Vec<TerrainCandidate>,
     pub terrain_folders: Vec<TerrainFolderSummary>,
+    pub layout_environments: Vec<LayoutEnvironmentSummary>,
+    pub layout_environment_warnings: Vec<String>,
+    pub layout_transitions: Vec<ZoneLayoutTransitions>,
+    pub layout_transition_warnings: Vec<String>,
     pub extracted_files: Vec<ExtractedLogicalFile>,
     pub folder_files: Vec<ExtractedLogicalFile>,
     pub missing_files: Vec<MissingTerrainCandidate>,
@@ -105,6 +126,79 @@ pub struct MissingTerrainCandidate {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CampaignHighLevelGraph {
+    pub scope: String,
+    pub patch_version: String,
+    pub release_line: String,
+    pub counts: CampaignHighLevelGraphCounts,
+    pub nodes: Vec<CampaignGraphNode>,
+    pub edges: Vec<CampaignGraphEdge>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct CampaignHighLevelGraphCounts {
+    pub acts: usize,
+    pub areas: usize,
+    pub topologies: usize,
+    pub terrain_folders: usize,
+    pub terrain_files: usize,
+    pub edges: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CampaignGraphNode {
+    pub id: String,
+    pub kind: CampaignGraphNodeKind,
+    pub label: String,
+    pub act: Option<i64>,
+    pub row_index: Option<usize>,
+    pub area_level: Option<i64>,
+    pub is_town: Option<bool>,
+    pub logical_path: Option<String>,
+    pub terrain_kind: Option<TerrainCandidateKind>,
+    pub terrain_status: Option<CampaignTerrainStatus>,
+    pub file_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CampaignGraphNodeKind {
+    Act,
+    Area,
+    Topology,
+    TerrainFolder,
+    TerrainFile,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CampaignTerrainStatus {
+    Candidate,
+    Extracted,
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CampaignGraphEdge {
+    pub id: String,
+    pub source: String,
+    pub target: String,
+    pub kind: CampaignGraphEdgeKind,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CampaignGraphEdgeKind {
+    ContainsArea,
+    UsesTopology,
+    DeclaresGraph,
+    DeclaresTsi,
+    GroupsTerrainFile,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct LayoutDbSummary {
     pub schema_version: Option<String>,
@@ -132,6 +226,93 @@ pub struct LayoutDbZoneSample {
     pub is_town: bool,
     pub topology_count: usize,
     pub tsi_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DgrLayoutGraph {
+    pub logical_path: String,
+    pub version: Option<u32>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub master_file: Option<String>,
+    pub nodes: Vec<DgrLayoutNode>,
+    pub edges: Vec<DgrLayoutEdge>,
+    pub warnings: Vec<String>,
+    pub node_transitions: Vec<LayoutNodeTransitions>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DgrLayoutNode {
+    pub index: usize,
+    pub x: i32,
+    pub y: i32,
+    pub links: Vec<usize>,
+    pub label: Option<String>,
+    pub rotation: Option<String>,
+    pub metadata: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DgrLayoutEdge {
+    pub index: usize,
+    pub from: usize,
+    pub to: usize,
+    pub edge_tile: Option<String>,
+    pub metadata: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LayoutRoomSummary {
+    pub label: String,
+    pub node_count: usize,
+    pub layouts: Vec<LayoutRoomOccurrence>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LayoutRoomOccurrence {
+    pub logical_path: String,
+    pub node_indices: Vec<usize>,
+}
+
+pub fn summarize_layout_rooms(graphs: &[DgrLayoutGraph]) -> Vec<LayoutRoomSummary> {
+    let mut rooms: BTreeMap<String, BTreeMap<String, BTreeSet<usize>>> = BTreeMap::new();
+    for graph in graphs {
+        for node in &graph.nodes {
+            if let Some(label) = &node.label {
+                rooms
+                    .entry(label.clone())
+                    .or_default()
+                    .entry(graph.logical_path.clone())
+                    .or_default()
+                    .insert(node.index);
+            }
+        }
+    }
+    let mut summaries = rooms
+        .into_iter()
+        .map(|(label, layouts)| {
+            let layouts = layouts
+                .into_iter()
+                .map(|(logical_path, indices)| LayoutRoomOccurrence {
+                    logical_path,
+                    node_indices: indices.into_iter().collect(),
+                })
+                .collect::<Vec<_>>();
+            LayoutRoomSummary {
+                label,
+                node_count: layouts.iter().map(|layout| layout.node_indices.len()).sum(),
+                layouts,
+            }
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .layouts
+            .len()
+            .cmp(&left.layouts.len())
+            .then(left.label.cmp(&right.label))
+    });
+    summaries
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -162,6 +343,8 @@ pub enum CampaignScrapeError {
         target_type: &'static str,
         value: String,
     },
+    #[error("invalid DGR file {path}: {message}")]
+    DgrParse { path: String, message: String },
 }
 
 /// Build the current Acts 1-5 raw scrape corpus and optional app artifact.
@@ -223,6 +406,7 @@ where
 
     let topology_by_index = topology_summaries(&topologies);
     let selected_areas = campaign_area_summaries(&world_areas);
+    let selected_topologies = selected_topology_summaries(&selected_areas, &topology_by_index);
     let (mut candidates, skipped_candidates) =
         terrain_candidates(&selected_areas, &topology_by_index, &logical_paths);
     candidates.sort();
@@ -334,6 +518,33 @@ where
         ));
     }
 
+    let layout_environments = scrape_layout_environments(
+        &files_dir,
+        &folder_files
+            .iter()
+            .map(|file| file.logical_path.clone())
+            .collect::<Vec<_>>(),
+        &request.source.patch_version,
+        &request.source.release_line(),
+    );
+    let layout_environments_path = request.out_dir.join("layout-environments.json");
+    write_json(&layout_environments_path, &layout_environments)?;
+    let layout_transitions = scrape_layout_transitions(
+        &files_dir,
+        &folder_files
+            .iter()
+            .chain(&extracted_files)
+            .map(|file| file.logical_path.clone())
+            .collect::<Vec<_>>(),
+        &selected_areas,
+        &candidates,
+        &request.schema_path,
+        &request.source.patch_version,
+        &request.source.release_line(),
+    )?;
+    let layout_transitions_path = request.out_dir.join("layout-transitions.json");
+    write_json(&layout_transitions_path, &layout_transitions)?;
+
     let manifest = CampaignScrapeManifest {
         scope: CAMPAIGN_ACTS_ONE_TO_FIVE_SCOPE.to_owned(),
         patch_version: request.source.patch_version.clone(),
@@ -342,8 +553,13 @@ where
         out_dir: request.out_dir.clone(),
         tables: extracted_tables,
         selected_areas,
+        selected_topologies,
         candidate_files: candidates,
         terrain_folders,
+        layout_environments: layout_environments.layouts,
+        layout_environment_warnings: layout_environments.warnings,
+        layout_transitions: layout_transitions.layouts,
+        layout_transition_warnings: layout_transitions.warnings,
         extracted_files,
         folder_files,
         missing_files,
@@ -352,6 +568,9 @@ where
 
     let manifest_path = request.out_dir.join("manifest.json");
     write_json(&manifest_path, &manifest)?;
+    let high_level_graph = campaign_manifest_to_high_level_graph(&manifest);
+    let high_level_graph_path = request.out_dir.join("high-level-graph.json");
+    write_json(&high_level_graph_path, &high_level_graph)?;
     let layout_db_path = if let Some(path) = &request.layout_db_out {
         write_layout_database(path, &campaign_manifest_to_layout_model(&manifest)?)?;
         Some(path.clone())
@@ -361,6 +580,9 @@ where
 
     Ok(CampaignScrapeOutput {
         manifest_path,
+        high_level_graph_path,
+        layout_environments_path,
+        layout_transitions_path,
         layout_db_path,
         manifest,
     })
@@ -434,6 +656,197 @@ pub fn campaign_manifest_to_layout_model(
         source_files,
         warnings: manifest.warnings.clone(),
     })
+}
+
+pub fn campaign_manifest_to_high_level_graph(
+    manifest: &CampaignScrapeManifest,
+) -> CampaignHighLevelGraph {
+    let extracted_paths = manifest
+        .extracted_files
+        .iter()
+        .map(|file| file.logical_path.as_str())
+        .collect::<HashSet<_>>();
+    let missing_paths = manifest
+        .missing_files
+        .iter()
+        .map(|file| file.logical_path.as_str())
+        .collect::<HashSet<_>>();
+    let topology_indices = manifest
+        .selected_topologies
+        .iter()
+        .map(|topology| topology.row_index)
+        .collect::<HashSet<_>>();
+
+    let mut nodes = Vec::new();
+    for act in 1..=5 {
+        nodes.push(CampaignGraphNode {
+            id: graph_act_id(act),
+            kind: CampaignGraphNodeKind::Act,
+            label: format!("Act {act}"),
+            act: Some(act),
+            row_index: None,
+            area_level: None,
+            is_town: None,
+            logical_path: None,
+            terrain_kind: None,
+            terrain_status: None,
+            file_count: None,
+        });
+    }
+
+    for area in &manifest.selected_areas {
+        nodes.push(CampaignGraphNode {
+            id: graph_area_id(&area.id),
+            kind: CampaignGraphNodeKind::Area,
+            label: area.name.clone(),
+            act: Some(area.act),
+            row_index: Some(area.row_index),
+            area_level: Some(area.area_level),
+            is_town: Some(area.is_town),
+            logical_path: None,
+            terrain_kind: None,
+            terrain_status: None,
+            file_count: None,
+        });
+    }
+
+    for topology in &manifest.selected_topologies {
+        nodes.push(CampaignGraphNode {
+            id: graph_topology_id(topology.row_index),
+            kind: CampaignGraphNodeKind::Topology,
+            label: topology_label(topology),
+            act: None,
+            row_index: Some(topology.row_index),
+            area_level: None,
+            is_town: None,
+            logical_path: None,
+            terrain_kind: None,
+            terrain_status: None,
+            file_count: None,
+        });
+    }
+
+    for folder in &manifest.terrain_folders {
+        nodes.push(CampaignGraphNode {
+            id: graph_folder_id(&folder.logical_path),
+            kind: CampaignGraphNodeKind::TerrainFolder,
+            label: folder.logical_path.clone(),
+            act: None,
+            row_index: None,
+            area_level: None,
+            is_town: None,
+            logical_path: Some(folder.logical_path.clone()),
+            terrain_kind: None,
+            terrain_status: None,
+            file_count: Some(folder.file_count),
+        });
+    }
+
+    for candidate in &manifest.candidate_files {
+        nodes.push(CampaignGraphNode {
+            id: graph_terrain_file_id(&candidate.logical_path),
+            kind: CampaignGraphNodeKind::TerrainFile,
+            label: logical_file_name(&candidate.logical_path),
+            act: None,
+            row_index: None,
+            area_level: None,
+            is_town: None,
+            logical_path: Some(candidate.logical_path.clone()),
+            terrain_kind: Some(candidate.kind),
+            terrain_status: Some(terrain_status(
+                &candidate.logical_path,
+                &extracted_paths,
+                &missing_paths,
+            )),
+            file_count: None,
+        });
+    }
+
+    let mut edges = Vec::new();
+    for area in &manifest.selected_areas {
+        push_graph_edge(
+            &mut edges,
+            graph_act_id(area.act),
+            graph_area_id(&area.id),
+            CampaignGraphEdgeKind::ContainsArea,
+            "contains area",
+        );
+        for topology_index in &area.topology_indices {
+            if topology_indices.contains(topology_index) {
+                push_graph_edge(
+                    &mut edges,
+                    graph_area_id(&area.id),
+                    graph_topology_id(*topology_index),
+                    CampaignGraphEdgeKind::UsesTopology,
+                    "uses topology",
+                );
+            }
+        }
+    }
+
+    for candidate in &manifest.candidate_files {
+        let target = graph_terrain_file_id(&candidate.logical_path);
+        match candidate.kind {
+            TerrainCandidateKind::Graph => {
+                if let Some(topology_index) = source_row_index(&candidate.source, "Topologies") {
+                    push_graph_edge(
+                        &mut edges,
+                        graph_topology_id(topology_index),
+                        target.clone(),
+                        CampaignGraphEdgeKind::DeclaresGraph,
+                        "declares graph",
+                    );
+                }
+            }
+            TerrainCandidateKind::Tsi => {
+                if let Some(area_row_index) = source_row_index(&candidate.source, "WorldAreas") {
+                    if let Some(area) = manifest
+                        .selected_areas
+                        .iter()
+                        .find(|area| area.row_index == area_row_index)
+                    {
+                        push_graph_edge(
+                            &mut edges,
+                            graph_area_id(&area.id),
+                            target.clone(),
+                            CampaignGraphEdgeKind::DeclaresTsi,
+                            "declares TSI",
+                        );
+                    }
+                }
+            }
+            TerrainCandidateKind::DgrVariant | TerrainCandidateKind::ArmVariant => {}
+        }
+
+        if let Some(folder) = terrain_area_folder(&candidate.logical_path) {
+            push_graph_edge(
+                &mut edges,
+                graph_folder_id(&folder),
+                target,
+                CampaignGraphEdgeKind::GroupsTerrainFile,
+                "groups terrain file",
+            );
+        }
+    }
+
+    let counts = CampaignHighLevelGraphCounts {
+        acts: 5,
+        areas: manifest.selected_areas.len(),
+        topologies: manifest.selected_topologies.len(),
+        terrain_folders: manifest.terrain_folders.len(),
+        terrain_files: manifest.candidate_files.len(),
+        edges: edges.len(),
+    };
+
+    CampaignHighLevelGraph {
+        scope: manifest.scope.clone(),
+        patch_version: manifest.patch_version.clone(),
+        release_line: manifest.release_line.clone(),
+        counts,
+        nodes,
+        edges,
+        warnings: manifest.warnings.clone(),
+    }
 }
 
 /// Write a layout model as a `FlatBuffers` artifact.
@@ -511,6 +924,261 @@ pub fn inspect_layout_database(input: &Path) -> Result<LayoutDbSummary, Campaign
     })
 }
 
+pub fn parse_dgr_layout_graph(
+    logical_path: &str,
+    bytes: &[u8],
+) -> Result<DgrLayoutGraph, CampaignScrapeError> {
+    let text = decode_utf16le_text(logical_path, bytes)?;
+    let lines = text
+        .lines()
+        .map(|line| line.trim().trim_start_matches('\u{feff}'))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+
+    let version = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("version "))
+        .and_then(|value| value.trim().parse::<u32>().ok());
+    let (width, height) = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("Size: "))
+        .and_then(parse_size_line)
+        .unwrap_or((None, None));
+    let master_file = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("MasterFile: "))
+        .and_then(|value| tokenize_dgr_line(value).into_iter().next());
+    let node_count = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("Nodes: "))
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .ok_or_else(|| CampaignScrapeError::DgrParse {
+            path: logical_path.to_owned(),
+            message: "missing Nodes header".to_owned(),
+        })?;
+    let edge_count = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("Edges: "))
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .ok_or_else(|| CampaignScrapeError::DgrParse {
+            path: logical_path.to_owned(),
+            message: "missing Edges header".to_owned(),
+        })?;
+    let data_start = layout_graph_data_start(logical_path, &lines)?;
+
+    let node_lines = lines
+        .get(data_start..data_start + node_count)
+        .ok_or_else(|| CampaignScrapeError::DgrParse {
+            path: logical_path.to_owned(),
+            message: format!("expected {node_count} node rows"),
+        })?;
+    let edge_start = data_start + node_count;
+    let edge_lines = lines
+        .get(edge_start..edge_start + edge_count)
+        .ok_or_else(|| CampaignScrapeError::DgrParse {
+            path: logical_path.to_owned(),
+            message: format!("expected {edge_count} edge rows"),
+        })?;
+
+    let mut warnings = Vec::new();
+    let nodes = node_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| match parse_dgr_node(index, line) {
+            Ok(node) => Some(node),
+            Err(message) => {
+                warnings.push(format!("node {index}: {message}"));
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let edges = edge_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| match parse_dgr_edge(index, line) {
+            Ok(edge) => Some(edge),
+            Err(message) => {
+                warnings.push(format!("edge {index}: {message}"));
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(DgrLayoutGraph {
+        logical_path: logical_path.to_owned(),
+        version,
+        width,
+        height,
+        master_file,
+        nodes,
+        edges,
+        warnings,
+        node_transitions: Vec::new(),
+    })
+}
+
+fn layout_graph_data_start(
+    logical_path: &str,
+    lines: &[&str],
+) -> Result<usize, CampaignScrapeError> {
+    if let Some(default_index) = lines.iter().position(|line| line.starts_with("Default%:")) {
+        return Ok(default_index + 1);
+    }
+
+    lines
+        .iter()
+        .position(|line| line.starts_with("Edges: "))
+        .map(|index| index + 4)
+        .ok_or_else(|| CampaignScrapeError::DgrParse {
+            path: logical_path.to_owned(),
+            message: "missing Edges header".to_owned(),
+        })
+}
+
+fn decode_utf16le_text(path: &str, bytes: &[u8]) -> Result<String, CampaignScrapeError> {
+    if bytes.len() % 2 != 0 {
+        return Err(CampaignScrapeError::DgrParse {
+            path: path.to_owned(),
+            message: "UTF-16LE byte length is odd".to_owned(),
+        });
+    }
+    let words = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    Ok(String::from_utf16_lossy(&words))
+}
+
+fn parse_size_line(value: &str) -> Option<(Option<i32>, Option<i32>)> {
+    let mut parts = value.split_whitespace();
+    let width = parts.next()?.parse::<i32>().ok();
+    let height = parts.next()?.parse::<i32>().ok();
+    Some((width, height))
+}
+
+fn parse_dgr_node(index: usize, line: &str) -> Result<DgrLayoutNode, String> {
+    let tokens = tokenize_dgr_line(line);
+    let x = parse_i32_token(&tokens, 0, "x")?;
+    let y = parse_i32_token(&tokens, 1, "y")?;
+    let link_count = parse_usize_token(&tokens, 2, "link count")?;
+    let link_start = 3;
+    let label_index = link_start + link_count;
+    if tokens.len() <= label_index {
+        return Err(format!(
+            "expected {link_count} link ids before node metadata, got {} tokens",
+            tokens.len()
+        ));
+    }
+    let links = (link_start..label_index)
+        .filter_map(|token_index| tokens[token_index].parse::<usize>().ok())
+        .collect::<Vec<_>>();
+    if links.len() != link_count {
+        return Err("one or more link ids were not integers".to_owned());
+    }
+    let label = non_empty_token(tokens.get(label_index));
+    let rotation = non_empty_token(tokens.get(label_index + 1));
+    let metadata = tokens
+        .get(label_index + 2..)
+        .unwrap_or_default()
+        .iter()
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .collect();
+
+    Ok(DgrLayoutNode {
+        index,
+        x,
+        y,
+        links,
+        label,
+        rotation,
+        metadata,
+    })
+}
+
+fn parse_dgr_edge(index: usize, line: &str) -> Result<DgrLayoutEdge, String> {
+    let tokens = tokenize_dgr_line(line);
+    let from = parse_usize_token(&tokens, 0, "from node")?;
+    let to = parse_usize_token(&tokens, 1, "to node")?;
+    let edge_tile = tokens
+        .iter()
+        .find(|token| token.to_ascii_lowercase().ends_with(".et"))
+        .cloned();
+    let metadata = tokens
+        .get(2..)
+        .unwrap_or_default()
+        .iter()
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .collect();
+
+    Ok(DgrLayoutEdge {
+        index,
+        from,
+        to,
+        edge_tile,
+        metadata,
+    })
+}
+
+fn tokenize_dgr_line(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut chars = line.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '"' => {
+                if in_quote {
+                    tokens.push(current.clone());
+                    current.clear();
+                    in_quote = false;
+                    while chars.peek().is_some_and(|next| next.is_whitespace()) {
+                        chars.next();
+                    }
+                } else {
+                    if !current.trim().is_empty() {
+                        tokens.push(current.trim().to_owned());
+                        current.clear();
+                    }
+                    in_quote = true;
+                }
+            }
+            character if character.is_whitespace() && !in_quote => {
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+            }
+            _ => current.push(character),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn parse_i32_token(tokens: &[String], index: usize, name: &str) -> Result<i32, String> {
+    tokens
+        .get(index)
+        .ok_or_else(|| format!("missing {name}"))?
+        .parse::<i32>()
+        .map_err(|_| format!("invalid {name}"))
+}
+
+fn parse_usize_token(tokens: &[String], index: usize, name: &str) -> Result<usize, String> {
+    tokens
+        .get(index)
+        .ok_or_else(|| format!("missing {name}"))?
+        .parse::<usize>()
+        .map_err(|_| format!("invalid {name}"))
+}
+
+fn non_empty_token(token: Option<&String>) -> Option<String> {
+    token.filter(|value| !value.is_empty()).cloned()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WorldAreaRow {
     row_index: usize,
@@ -585,6 +1253,105 @@ fn topology_summaries(rows: &[TopologyRow]) -> HashMap<usize, TopologySummary> {
             )
         })
         .collect()
+}
+
+fn selected_topology_summaries(
+    areas: &[CampaignAreaSummary],
+    topology_by_index: &HashMap<usize, TopologySummary>,
+) -> Vec<TopologySummary> {
+    let mut topologies = areas
+        .iter()
+        .flat_map(|area| area.topology_indices.iter())
+        .filter_map(|index| topology_by_index.get(index))
+        .cloned()
+        .collect::<Vec<_>>();
+    topologies.sort_by_key(|topology| topology.row_index);
+    topologies.dedup_by_key(|topology| topology.row_index);
+    topologies
+}
+
+fn topology_label(topology: &TopologySummary) -> String {
+    if topology.id.is_empty() {
+        format!("Topology {}", topology.row_index)
+    } else {
+        topology.id.clone()
+    }
+}
+
+fn graph_act_id(act: i64) -> String {
+    format!("act:{act}")
+}
+
+fn graph_area_id(area_id: &str) -> String {
+    format!("area:{area_id}")
+}
+
+fn graph_topology_id(row_index: usize) -> String {
+    format!("topology:{row_index}")
+}
+
+fn graph_folder_id(logical_path: &str) -> String {
+    format!("terrain-folder:{}", normalize_logical_path(logical_path))
+}
+
+fn graph_terrain_file_id(logical_path: &str) -> String {
+    format!("terrain-file:{}", normalize_logical_path(logical_path))
+}
+
+fn push_graph_edge(
+    edges: &mut Vec<CampaignGraphEdge>,
+    source: String,
+    target: String,
+    kind: CampaignGraphEdgeKind,
+    label: &str,
+) {
+    edges.push(CampaignGraphEdge {
+        id: format!("edge:{}:{}:{}", edge_kind_id(kind), source, target),
+        source,
+        target,
+        kind,
+        label: label.to_owned(),
+    });
+}
+
+fn edge_kind_id(kind: CampaignGraphEdgeKind) -> &'static str {
+    match kind {
+        CampaignGraphEdgeKind::ContainsArea => "contains-area",
+        CampaignGraphEdgeKind::UsesTopology => "uses-topology",
+        CampaignGraphEdgeKind::DeclaresGraph => "declares-graph",
+        CampaignGraphEdgeKind::DeclaresTsi => "declares-tsi",
+        CampaignGraphEdgeKind::GroupsTerrainFile => "groups-terrain-file",
+    }
+}
+
+fn terrain_status(
+    logical_path: &str,
+    extracted_paths: &HashSet<&str>,
+    missing_paths: &HashSet<&str>,
+) -> CampaignTerrainStatus {
+    if extracted_paths.contains(logical_path) {
+        CampaignTerrainStatus::Extracted
+    } else if missing_paths.contains(logical_path) {
+        CampaignTerrainStatus::Missing
+    } else {
+        CampaignTerrainStatus::Candidate
+    }
+}
+
+fn logical_file_name(logical_path: &str) -> String {
+    logical_path
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(logical_path)
+        .to_owned()
+}
+
+fn source_row_index(source: &str, table: &str) -> Option<usize> {
+    let marker = format!("{table}[");
+    let start = source.find(&marker)? + marker.len();
+    let end = source.get(start..)?.find(']')? + start;
+    source.get(start..end)?.parse().ok()
 }
 
 fn campaign_area_summaries(rows: &[WorldAreaRow]) -> Vec<CampaignAreaSummary> {
@@ -893,15 +1660,20 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), CampaignScrape
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
 
     use pather_schema::{
         LayoutDatabaseModel, SourceFileModel, TerrainFileKind, TerrainFileModel, TerrainFileStatus,
         ZoneModel, LAYOUT_SCHEMA_VERSION,
     };
+    use poe_content::{ExtractedLogicalFile, LogicalFileLocation};
 
     use super::{
-        inspect_layout_database, terrain_candidates, terrain_folder_corpus, write_layout_database,
-        CampaignAreaSummary, TerrainCandidate, TerrainCandidateKind, TopologySummary,
+        campaign_manifest_to_high_level_graph, inspect_layout_database, parse_dgr_layout_graph,
+        summarize_layout_rooms, terrain_candidates, terrain_folder_corpus, write_layout_database,
+        CampaignAreaSummary, CampaignGraphEdgeKind, CampaignGraphNodeKind, CampaignScrapeManifest,
+        CampaignTerrainStatus, TerrainCandidate, TerrainCandidateKind, TerrainFolderSummary,
+        TopologySummary,
     };
 
     #[test]
@@ -1037,6 +1809,208 @@ mod tests {
                 "metadata/terrain/act1/area1/coast.dgr".to_owned(),
                 "metadata/terrain/act1/area1/graphs/coast.tgr".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn high_level_graph_links_areas_topologies_and_terrain_files() {
+        let manifest = CampaignScrapeManifest {
+            scope: "campaign-acts-1-5".to_owned(),
+            patch_version: "3.29.3.3".to_owned(),
+            release_line: "3.29".to_owned(),
+            schema: PathBuf::from("data/cache/dat-schema/_Core.gql"),
+            out_dir: PathBuf::from(".poe-layouts/raw/campaign-acts-1-5"),
+            tables: Vec::new(),
+            selected_areas: vec![CampaignAreaSummary {
+                row_index: 5,
+                id: "1_1_1".to_owned(),
+                name: "The Twilight Strand".to_owned(),
+                act: 1,
+                is_town: false,
+                area_level: 1,
+                topology_indices: vec![12],
+                tsi_file: None,
+            }],
+            selected_topologies: vec![TopologySummary {
+                row_index: 12,
+                id: "twilight_strand".to_owned(),
+                graph_file: Some(
+                    "metadata/terrain/act1/area1/graphs/twilight_strand.tgr".to_owned(),
+                ),
+            }],
+            candidate_files: vec![TerrainCandidate {
+                logical_path: "metadata/terrain/act1/area1/graphs/twilight_strand.tgr".to_owned(),
+                source: "WorldAreas[5].TopologiesKeys -> Topologies[12] twilight_strand"
+                    .to_owned(),
+                kind: TerrainCandidateKind::Graph,
+            }],
+            terrain_folders: vec![TerrainFolderSummary {
+                logical_path: "metadata/terrain/act1/area1".to_owned(),
+                source:
+                    "terrain area folder for metadata/terrain/act1/area1/graphs/twilight_strand.tgr"
+                        .to_owned(),
+                file_count: 3,
+            }],
+            extracted_files: vec![ExtractedLogicalFile {
+                logical_path: "metadata/terrain/act1/area1/graphs/twilight_strand.tgr".to_owned(),
+                output_path: PathBuf::from(
+                    ".poe-layouts/raw/campaign-acts-1-5/files/metadata/terrain/act1/area1/graphs/twilight_strand.tgr",
+                ),
+                location: LogicalFileLocation {
+                    bundle: "fixture.bundle.bin".to_owned(),
+                    offset: 0,
+                    size: 1,
+                },
+                cache_key: "fixture".to_owned(),
+                cache_path: PathBuf::from(".poe-layouts/cache/fixture"),
+                cache_source: "cache".to_owned(),
+                byte_len: 1,
+                blake3: "hash".to_owned(),
+            }],
+            folder_files: Vec::new(),
+            layout_environments: Vec::new(),
+            layout_environment_warnings: Vec::new(),
+            layout_transitions: Vec::new(),
+            layout_transition_warnings: Vec::new(),
+            missing_files: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        let graph = campaign_manifest_to_high_level_graph(&manifest);
+
+        assert_eq!(graph.counts.areas, 1);
+        assert_eq!(graph.counts.topologies, 1);
+        assert_eq!(graph.counts.terrain_files, 1);
+        assert!(graph
+            .nodes
+            .iter()
+            .any(|node| { node.id == "area:1_1_1" && node.kind == CampaignGraphNodeKind::Area }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.id == "terrain-file:metadata/terrain/act1/area1/graphs/twilight_strand.tgr"
+                && node.terrain_status == Some(CampaignTerrainStatus::Extracted)
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.kind == CampaignGraphEdgeKind::UsesTopology
+                && edge.source == "area:1_1_1"
+                && edge.target == "topology:12"
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.kind == CampaignGraphEdgeKind::DeclaresGraph
+                && edge.source == "topology:12"
+                && edge.target
+                    == "terrain-file:metadata/terrain/act1/area1/graphs/twilight_strand.tgr"
+        }));
+    }
+
+    #[test]
+    fn summarize_layout_rooms_counts_distinct_layouts_and_node_occurrences() {
+        let text = r#"version 19
+Nodes: 4
+Edges: 0
+""
+""
+""
+0 0 0 "waypoint" I 0 100
+1 1 0 "waypoint" I 0 100
+2 2 0 "entrance" I 0 100
+3 3 0 "" (any) 0 100
+"#;
+        let bytes = text
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let first = parse_dgr_layout_graph("first.tgr", &bytes).expect("first graph");
+        let mut second = parse_dgr_layout_graph("second.tgr", &bytes).expect("second graph");
+        second.nodes.truncate(1);
+        let rooms = summarize_layout_rooms(&[first.clone(), first, second]);
+
+        assert_eq!(rooms.len(), 2);
+        assert_eq!(rooms[0].label, "waypoint");
+        assert_eq!(rooms[0].layouts.len(), 2);
+        assert_eq!(rooms[0].node_count, 3);
+        assert_eq!(rooms[0].layouts[0].node_indices, vec![0, 1]);
+        assert_eq!(rooms[1].label, "entrance");
+        assert_eq!(rooms[1].layouts.len(), 1);
+        assert_eq!(rooms[1].node_count, 1);
+        assert!(summarize_layout_rooms(&[]).is_empty());
+    }
+
+    #[test]
+    fn parse_dgr_layout_graph_reads_nodes_and_edges() {
+        let text = r#"version 19
+Size: 12 8
+MasterFile: "Metadata/Terrain/Act1/Area7Level1/master.tsi"
+Nodes: 2
+Edges: 1
+""
+"Metadata/Terrain/Act1/Area7Level1/GroundTypes/prison_floor.gt"
+""
+Default%: 0 0 0
+60 174 1 1 "entranceout" R180 3 "default" "entrance1" "waypoint" 100 0 N
+258 14 1 0 "entranceup" R270 1 "entrance2" 100 0 N
+0 1 0 100 0 "Metadata/Terrain/Dungeon/rooms.et" 10 100 "" 0 0 0 P N 1
+"#;
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+
+        let graph = parse_dgr_layout_graph("fixture.dgr", &bytes).expect("parse DGR");
+
+        assert_eq!(graph.version, Some(19));
+        assert_eq!(graph.width, Some(12));
+        assert_eq!(graph.height, Some(8));
+        assert_eq!(
+            graph.master_file.as_deref(),
+            Some("Metadata/Terrain/Act1/Area7Level1/master.tsi")
+        );
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.nodes[0].links, vec![1]);
+        assert_eq!(graph.nodes[0].label.as_deref(), Some("entranceout"));
+        assert_eq!(graph.nodes[0].rotation.as_deref(), Some("R180"));
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges[0].from, 0);
+        assert_eq!(graph.edges[0].to, 1);
+        assert_eq!(
+            graph.edges[0].edge_tile.as_deref(),
+            Some("Metadata/Terrain/Dungeon/rooms.et")
+        );
+    }
+
+    #[test]
+    fn parse_dgr_layout_graph_reads_tgr_without_default_row() {
+        let text = r#"version 19
+Size: 84 18
+MasterFile: "Metadata/Terrain/Act1/Area1/master.tsi"
+Nodes: 2
+Edges: 1
+""
+"Metadata/Terrain/Act1/Area1/GroundTypes/chris_sand_dune.gt"
+""
+1668 75 1 1 "townentrance" I 2 "entrance1" "AutoWaypoint" 100 0 1 1
+296 81 1 0 "washedup" R270 1 "default" 100 0 1 1
+1 0 0 100 1 "Metadata/Terrain/Beach/LargeCliffs/beach_large_cliff.et" 0 0
+"#;
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+
+        let graph = parse_dgr_layout_graph("fixture.tgr", &bytes).expect("parse TGR");
+
+        assert_eq!(graph.version, Some(19));
+        assert_eq!(graph.width, Some(84));
+        assert_eq!(graph.height, Some(18));
+        assert_eq!(
+            graph.master_file.as_deref(),
+            Some("Metadata/Terrain/Act1/Area1/master.tsi")
+        );
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.nodes[0].links, vec![1]);
+        assert_eq!(graph.nodes[0].label.as_deref(), Some("townentrance"));
+        assert_eq!(graph.nodes[0].rotation.as_deref(), Some("I"));
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges[0].from, 1);
+        assert_eq!(graph.edges[0].to, 0);
+        assert_eq!(
+            graph.edges[0].edge_tile.as_deref(),
+            Some("Metadata/Terrain/Beach/LargeCliffs/beach_large_cliff.et")
         );
     }
 }
