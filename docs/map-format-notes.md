@@ -177,7 +177,33 @@ candidates are identified from the entity path, not from door-shaped art.
 Missing/unmapped entrance slots are not proof of a door. Ancient Pyramid
 storey graphs require a separate routing model and remain deferred.
 
-## Remaining Questions
+## ARM Room Plans
+
+Validated the room-plan parser against all 1,658 cached Acts 1-5 ARM files.
+The ARM asset dictionary uses one-based edge/ground references; zero is an
+unspecified/default reference. The numeric pair before the room label is not
+necessarily the root tile footprint. `k` root keys carry the actual grid size;
+single-token roots use the earlier base-size pair instead.
+
+Tile-key rows contain one entry per grid cell. `k` has 23 integer fields through
+version 18 and 24 afterwards; `s`, `n`, and `o` have no payload, and `f` has one
+feature reference. Preserve key spans and origins: large keys may be anchored
+near a boundary, so grid coordinates alone do not justify extending rectangles
+from those anchors. The preview colors the recorded key cells rather than
+pretending to assemble resolved ground meshes.
+
+ARM point sections change with version: old files use count-prefixed lists;
+version 32+ uses `-1` terminators. Versions 35/36 have an additional quoted row
+before the grid. Placed objects follow the grid, with coordinates and separate
+art/entity paths. Spawn hooks retain their tags, including `mapboss`. Later
+decal and auxiliary layers are deliberately not rendered.
+
+The versioned section and tile-key model was cross-checked against
+[poeformats' ARM reader](https://github.com/annalithic/poeformats/blob/master/Arm.cs)
+and verified on the local corpus. The preview is a schematic source inspection,
+not collision geometry or a reconstruction of the game's rendered minimap.
+
+## Open Questions
 
 - Are `generate.rs`, `room_tiles.rs`, and `room_nodes.rs` the same line format
   with different generation roles, or do their numeric weights and disabled

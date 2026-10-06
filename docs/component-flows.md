@@ -204,8 +204,26 @@ they are not inferred world-space bounds or decoded terrain geometry.
 `GET /api/room-variants?layout=...` exposes the same catalog for one graph.
 `app/src/render/RoomPreview.tsx` is the renderer integration boundary, receiving
 the selected `RoomVariant` (including its logical ARM path) and room label.
-It currently displays an explicit pending-render state; no fabricated room
-geometry is drawn. The inspector shows selectable ARM variants, dimensions,
+It loads `GET /api/room-plan?path=...` when the selected variant changes, aborts
+stale requests, and passes the parsed plan to the separate `RoomPlanView.tsx`
+renderer. Rust's `room_plan` module decodes UTF-16 ARM files, validates versioned
+section boundaries, and exposes the root grid, tile keys, ground/edge asset
+indices, spawn/entrance markers, and placed-object coordinates. Errors remain
+JSON; missing files return 404 rather than an HTML app fallback.
+
+The renderer draws a schematic ARM plan at 24 units per cell, rotated 45 degrees
+counterclockwise. Tile keys are shown at their recorded grid cells; their full
+key sizes and origins are retained in tooltips, not assembled into guessed
+terrain meshes. Color categories are inferred from ground asset names. Spawn
+hooks and object markers use their actual coordinates; `mapboss` hooks get a
+distinct ring. Grid, objects, and markers have independent visibility toggles.
+The viewport fits on load/resize, supports pointer dragging and cursor-centered
+wheel zoom, and has zoom/fit buttons. Marker glyphs remain screen-sized.
+Room state handles loading, missing variants, and parse failures explicitly.
+This is a data-backed plan, not textured in-game geometry; mesh/texture assets,
+decals, and terrain assembly are not decoded yet.
+
+The inspector shows selectable ARM variants, header dimensions,
 version, asset-entry count, source paths, distinct-layout counts, and node
 occurrences in the displayed and other candidate graphs.
 

@@ -149,6 +149,7 @@ fn route(request: &HttpRequest, config: &ServerConfig) -> HttpResponse {
         ("GET", "/api/layout-graph") => json_response(layout_graph(config, request.query_params())),
         ("POST", "/api/layout-rooms") => json_response(layout_rooms(config, request.json_body())),
         ("GET", "/api/room-variants") => json_response(room_variants(config, request.query_params())),
+        ("GET", "/api/room-plan") => json_response(room_plan(config, request.query_params())),
         ("GET", "/api/layout-environments") => file_response(
             &config
                 .workspace
@@ -398,6 +399,64 @@ fn room_variants(
         .ok_or_else(|| WebError::BadRequest("missing layout path".to_owned()))?;
     let graph = read_layout_graph(config, &path)?;
     Ok(pather_core::inspect_layout_rooms(&config.workspace.campaign_files_dir(), &graph))
+}
+
+fn room_plan(
+    config: &ServerConfig,
+    params: Vec<(String, String)>,
+) -> Result<pather_core::RoomPlan, WebError> {
+    let logical_path = query_value(&params, "path")
+        .ok_or_else(|| WebError::BadRequest("missing room path".to_owned()))?;
+    let logical_path = normalize_logical_path(&logical_path).to_ascii_lowercase();
+    if !logical_path.ends_with(".arm") {
+        return Err(WebError::BadRequest(
+            "room path must be an .arm file".to_owned(),
+        ));
+    }
+    let path = raw_file_path(&config.workspace.campaign_files_dir(), &logical_path)?;
+    let bytes = fs::read(&path).map_err(|source| {
+        if source.kind() == std::io::ErrorKind::NotFound {
+            WebError::NotFound(format!("room not extracted: {logical_path}"))
+        } else {
+            WebError::File { path, source }
+        }
+    })?;
+    pather_core::parse_arm_room_plan(&logical_path, &bytes).map_err(WebError::from)
+}
+
+#[cfg(test)]
+mod room_plan_tests {
+    use super::*;
+
+    #[test]
+    fn serves_room_plans_and_json_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_root(dir.path());
+        fs::create_dir_all(workspace.campaign_files_dir()).unwrap();
+        let text = "version 30\n0\n1 1\n1 1\n\"room\"\n0 0\ns\n0 0\n0 0\n0 0\n0 0\n0\n0\n0\n0\n0\n0\ns\n0\n";
+        fs::write(workspace.campaign_files_dir().join("room.arm"),
+            text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>()).unwrap();
+        fs::write(workspace.campaign_files_dir().join("broken.arm"), [1]).unwrap();
+        let config = ServerConfig { addr: DEFAULT_ADDR.to_owned(), static_root: dir.path().join("dist"), workspace };
+        for (query, status) in [
+            ("path=room.arm", 200), ("path=ROOM.ARM", 200),
+            ("", 400), ("path=room.tgr", 400),
+            ("path=..%2Froom.arm", 400), ("path=missing.arm", 404),
+            ("path=broken.arm", 500),
+        ] {
+            let request = HttpRequest { method: "GET".to_owned(), path: "/api/room-plan".to_owned(), query: query.to_owned(), body: Vec::new() };
+            let response = route(&request, &config);
+            assert_eq!(response.status, status, "{query}");
+            assert_eq!(response.content_type, "application/json");
+            let value: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+            if status == 200 {
+                assert_eq!(value["width"], 1);
+                assert_eq!(value["tiles"][0]["kind"], "s");
+            } else {
+                assert!(value["error"].is_string());
+            }
+        }
+    }
 }
 
 #[derive(Serialize)]
