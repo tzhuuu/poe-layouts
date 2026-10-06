@@ -1,24 +1,40 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bug,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
-  Compass,
   Database,
   File,
   Folder,
   FolderTree,
   GitBranch,
+  Grid2X2,
   Home,
-  Info,
   Layers,
+  CircleHelp,
+  TreePine,
+  Info,
   Map as MapIcon,
   Search,
   TableProperties,
+  Maximize2,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { TerrainFileStatus } from "../generated/poe-layouts/terrain-file-status";
+import { TerrainFileKind } from "../generated/poe-layouts/terrain-file-kind";
+import { nodeBossDetails, nodeBossLabel, nodeHasBoss, nodeRole, nodeRoles } from "../data/nodeHighlights";
+import { RoomList, RoomPicker, useRoomWorkspace } from "./RoomList";
+import { loadLayoutEnvironments, type LayoutEnvironment } from "../data/layoutEnvironment";
+import {
+  loadLayoutGraph,
+  nodeLabelLines,
+  nodeTransitionDetails,
+  type LayoutGraph,
+  type LayoutGraphNode,
+} from "../data/layoutGraph";
 import {
   loadLayoutData,
   terrainFilesForZone,
@@ -35,7 +51,6 @@ import {
   type RawFileEntry,
   type RawFolderEntry,
 } from "../data/rawFiles";
-import { PixiLayoutPreview } from "../render/PixiLayoutPreview";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -43,12 +58,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { ScrollArea } from "./ui/scroll-area";
 import { Separator } from "./ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "./ui/tooltip";
 
 type LoadState =
   | { status: "loading" }
@@ -105,15 +114,13 @@ export function App() {
   }
 
   return (
-    <TooltipProvider>
-      <LayoutExplorer
-        data={loadState.data}
-        query={query}
-        selectedZoneId={selectedZoneId}
-        onQueryChange={setQuery}
-        onSelectZone={setSelectedZoneId}
-      />
-    </TooltipProvider>
+    <LayoutExplorer
+      data={loadState.data}
+      query={query}
+      selectedZoneId={selectedZoneId}
+      onQueryChange={setQuery}
+      onSelectZone={setSelectedZoneId}
+    />
   );
 }
 
@@ -166,7 +173,7 @@ function LayoutExplorer({
   }, []);
 
   return (
-    <main className="grid h-screen min-h-[680px] min-w-[1060px] grid-cols-[340px_minmax(0,1fr)] overflow-hidden bg-background text-foreground">
+    <main className="grid h-screen min-h-[680px] min-w-[720px] grid-cols-[240px_minmax(0,1fr)] overflow-hidden bg-background text-foreground xl:grid-cols-[340px_minmax(0,1fr)]">
       <aside className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-4 border-r bg-muted/30 p-4">
         <header className="space-y-3">
           <div className="flex items-start justify-between gap-3">
@@ -195,7 +202,7 @@ function LayoutExplorer({
         />
       </aside>
 
-      <WorkspaceTabs selectedTerrain={selectedTerrain} selectedZone={selectedZone} />
+      <WorkspaceTabs gameVersion={data.gameVersion} selectedTerrain={selectedTerrain} selectedZone={selectedZone} />
     </main>
   );
 }
@@ -255,8 +262,9 @@ function ExplorerPane({
               type="button"
             >
               <span className="min-w-0">
-                <strong className="block truncate font-medium">
-                  {zone.name || zone.id}
+                <strong className="flex min-w-0 items-center gap-1.5 font-medium">
+                  <span className="min-w-0 truncate">{zone.name || zone.id}</span>
+                  {zone.isTown && <span className="shrink-0 text-muted-foreground" title="Town"><Home aria-hidden="true" className="size-3.5" /></span>}
                 </strong>
                 <small className="block truncate text-xs text-muted-foreground">
                   {zone.id} ({layoutCountLabel(layoutCountsByZoneId.get(zone.id) ?? 0)})
@@ -272,43 +280,109 @@ function ExplorerPane({
 }
 
 function WorkspaceTabs({
+  gameVersion,
   selectedTerrain,
   selectedZone,
 }: {
+  gameVersion: string;
   selectedTerrain: TerrainFileSummary[];
   selectedZone: ZoneSummary | null;
 }) {
+  const [environments, setEnvironments] = useState<EnvironmentLoadState>({ status: "loading" });
+  const [activeTab, setActiveTab] = useState("layouts");
+  useEffect(() => {
+    let cancelled = false;
+    setEnvironments({ status: "loading" });
+    loadLayoutEnvironments()
+      .then((index) => {
+        if (index.patchVersion !== gameVersion) {
+          throw new Error(`Classifications are for ${index.patchVersion}; layouts are for ${gameVersion}`);
+        }
+        if (!cancelled) setEnvironments({
+          status: "ready",
+          byPath: new Map(index.layouts.map((layout) => [layout.logicalPath, layout])),
+          warnings: index.warnings,
+        });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setEnvironments({ status: "error", message: error instanceof Error ? error.message : String(error) });
+      });
+    return () => { cancelled = true; };
+  }, [gameVersion]);
+
+  const graphCandidates = useMemo(
+    () =>
+      selectedTerrain.filter(
+        (file) =>
+          file.kind === TerrainFileKind.Graph &&
+          file.status === TerrainFileStatus.Extracted,
+      ),
+    [selectedTerrain],
+  );
+  const [selectedLayoutPath, setSelectedLayoutPath] = useState<string | null>(
+    null,
+  );
+  const roomLayoutPaths = useMemo(
+    () => [...new Set(graphCandidates.map((file) => file.logicalPath))],
+    [graphCandidates],
+  );
+  const roomWorkspace = useRoomWorkspace(roomLayoutPaths, selectedLayoutPath);
+  useEffect(() => {
+    setSelectedLayoutPath((currentPath) =>
+      currentPath &&
+      graphCandidates.some((file) => file.logicalPath === currentPath)
+        ? currentPath
+        : graphCandidates[0]?.logicalPath ?? null,
+    );
+  }, [graphCandidates]);
+
   return (
     <Tabs
       className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-3 p-4"
-      defaultValue="layouts"
+      value={activeTab}
+      onValueChange={setActiveTab}
     >
       <WorkspaceHeader
         selectedTerrain={selectedTerrain}
         selectedZone={selectedZone}
+        environments={environments}
+        fallbackLayoutPath={graphCandidates[0]?.logicalPath ?? null}
+        picker={activeTab === "rooms" ? (
+          <RoomPicker key={selectedZone?.id} workspace={roomWorkspace} />
+        ) : (
+          <LayoutPicker
+            key={selectedZone?.id}
+            onSelectLayout={setSelectedLayoutPath}
+            selectedLayoutPath={selectedLayoutPath}
+            terrainFiles={selectedTerrain.filter((file) => file.kind === TerrainFileKind.Graph)}
+          />
+        )}
       />
 
       <TabsContent
-        className="grid min-h-0 grid-rows-[minmax(0,1fr)_270px] gap-3"
+        className="grid min-h-0 min-w-0 overflow-hidden data-[state=inactive]:hidden"
         value="layouts"
       >
-        <section className="grid min-h-0 grid-cols-[minmax(0,1fr)_320px] gap-3">
+        <section className="grid min-h-0 grid-cols-[minmax(0,1fr)_240px] gap-3 xl:grid-cols-[minmax(0,1fr)_320px]">
           <section className="relative min-h-0 overflow-hidden rounded-md border border-foreground/20 bg-[#101716] shadow-sm">
-            <div className="absolute left-3 top-3 z-10 flex gap-1">
-              <ToolbarButton label="World orientation">
-                <Compass />
-              </ToolbarButton>
-              <ToolbarButton label="Topology layers">
-                <Layers />
-              </ToolbarButton>
-            </div>
-            <PixiLayoutPreview zone={selectedZone} terrainFiles={selectedTerrain} />
+            <LayoutGraphPreview
+              logicalPath={selectedLayoutPath}
+              outdoor={environments.status === "ready" && environments.byPath.get(selectedLayoutPath ?? "")?.environment === "outdoor"}
+              zoneId={selectedZone?.id}
+            />
           </section>
 
           <ZoneInspector zone={selectedZone} />
         </section>
 
-        <LayoutCandidatesPanel terrainFiles={selectedTerrain} />
+      </TabsContent>
+
+      <TabsContent
+        className="min-h-0 min-w-0 overflow-hidden data-[state=inactive]:hidden"
+        forceMount
+        value="rooms"
+      >
+        <RoomList workspace={roomWorkspace} />
       </TabsContent>
 
       <TabsContent
@@ -324,22 +398,39 @@ function WorkspaceTabs({
 function WorkspaceHeader({
   selectedTerrain,
   selectedZone,
+  environments,
+  fallbackLayoutPath,
+  picker,
 }: {
   selectedTerrain: TerrainFileSummary[];
   selectedZone: ZoneSummary | null;
+  environments: EnvironmentLoadState;
+  fallbackLayoutPath: string | null;
+  picker: React.ReactNode;
 }) {
   const missing = selectedTerrain.filter(
     (file) => file.status === TerrainFileStatus.Missing,
   ).length;
+  const zoneTsiPath = selectedZone?.tsiFile?.replace(/\\/g, "/").toLowerCase();
+  const environment = environments.status === "ready"
+    ? environments.byPath.get(zoneTsiPath ?? "") ?? environments.byPath.get(fallbackLayoutPath ?? "")
+    : undefined;
+  const unavailableReason = environments.status === "error"
+    ? environments.message
+    : environments.status === "loading"
+      ? "Loading environment classification"
+      : "No classification for this zone";
 
   return (
     <header className="grid gap-3">
       <div className="flex min-h-10 items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h2 className="truncate text-2xl font-semibold tracking-tight">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+          <h2 className="max-w-full break-words text-2xl font-semibold tracking-tight">
             {selectedZone?.name ?? "No zone selected"}
           </h2>
+          {selectedZone && <EnvironmentBadge layout={environment} unavailableReason={unavailableReason} />}
         </div>
+        {environments.status === "ready" && environments.warnings.length > 0 && <Badge title={environments.warnings.join("\n")} variant="warning">{environments.warnings.length} environment warnings</Badge>}
         {missing > 0 && (
           <Badge variant="warning">
             <AlertTriangle className="mr-1 size-3" />
@@ -348,16 +439,23 @@ function WorkspaceHeader({
         )}
       </div>
 
-      <TabsList className="w-fit">
-        <TabsTrigger value="layouts">
-          <TableProperties />
-          Layouts
-        </TabsTrigger>
-        <TabsTrigger value="files">
-          <FolderTree />
-          Files
-        </TabsTrigger>
-      </TabsList>
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
+        <TabsList className="w-fit shrink-0">
+          <TabsTrigger value="layouts">
+            <TableProperties />
+            Layouts
+          </TabsTrigger>
+          <TabsTrigger value="rooms">
+            <Layers />
+            Rooms
+          </TabsTrigger>
+          <TabsTrigger value="files">
+            <FolderTree />
+            Files
+          </TabsTrigger>
+        </TabsList>
+        <div className="min-w-0 border-l pl-3">{picker}</div>
+      </div>
     </header>
   );
 }
@@ -433,6 +531,391 @@ function DebugStat({
   );
 }
 
+function LayoutGraphPreview({ logicalPath, outdoor, zoneId }: { logicalPath: string | null; outdoor: boolean; zoneId?: string }) {
+  const [loadState, setLoadState] = useState<
+    | { status: "idle" }
+    | { status: "loading" }
+    | { status: "ready"; graph: LayoutGraph }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
+
+  useEffect(() => {
+    if (!logicalPath) {
+      setLoadState({ status: "idle" });
+      return;
+    }
+    let cancelled = false;
+    setLoadState({ status: "loading" });
+    loadLayoutGraph(logicalPath, zoneId)
+      .then((graph) => {
+        if (!cancelled) {
+          setLoadState({ status: "ready", graph });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setLoadState({
+            status: "error",
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [logicalPath, zoneId]);
+
+  if (!logicalPath) {
+    return (
+      <div className="grid h-full place-items-center p-6 text-sm text-white/70">
+        No extracted DGR layout graph is available for this zone.
+      </div>
+    );
+  }
+
+  if (loadState.status === "loading") {
+    return (
+      <div className="grid h-full place-items-center p-6 text-sm text-white/70">
+        Loading DGR graph...
+      </div>
+    );
+  }
+
+  if (loadState.status === "error") {
+    return (
+      <div className="grid h-full place-items-center p-6">
+        <div className="max-w-md rounded-md border border-amber-300/40 bg-amber-950/50 p-3 text-sm text-amber-100">
+          {loadState.message}
+        </div>
+      </div>
+    );
+  }
+
+  if (loadState.status !== "ready") {
+    return null;
+  }
+
+  return <LayoutGraphSvg graph={loadState.graph} outdoor={outdoor} />;
+}
+
+function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boolean }) {
+  const gridId = useId();
+  const [gridVisible, setGridVisible] = useState(true);
+  const view = useMemo(() => layoutGraphView(graph), [graph]);
+  const fitCamera = useMemo(() => cameraFromView(view), [view]);
+  const [camera, setCamera] = useState<GraphCamera>(fitCamera);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const dragRef = useRef<GraphDrag | null>(null);
+
+  useEffect(() => {
+    setCamera(fitCamera);
+    setGridVisible(true);
+    dragRef.current = null;
+  }, [fitCamera]);
+
+  const zoomGraph = useCallback(
+    (factor: number, anchor?: GraphPoint) => {
+      setCamera((current) =>
+        zoomCamera(
+          current,
+          anchor ?? cameraCenter(current),
+          factor,
+          fitCamera.width / 20,
+          fitCamera.width * 8,
+        ),
+      );
+    },
+    [fitCamera.width],
+  );
+
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.currentTarget.setPointerCapture(event.pointerId);
+      dragRef.current = {
+        camera,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+      };
+    },
+    [camera],
+  );
+
+  const handlePointerMove = useCallback((event: React.PointerEvent<SVGSVGElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !svgRef.current) {
+      return;
+    }
+    const delta = graphDeltaFromClientDelta(
+      svgRef.current,
+      drag.camera,
+      event.clientX - drag.startX,
+      event.clientY - drag.startY,
+    );
+    setCamera({
+      ...drag.camera,
+      minX: drag.camera.minX - delta.x,
+      minY: drag.camera.minY - delta.y,
+    });
+  }, []);
+
+  const handlePointerEnd = useCallback((event: React.PointerEvent<SVGSVGElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      dragRef.current = null;
+    }
+  }, []);
+
+  const handleWheel = useCallback(
+    (event: React.WheelEvent<SVGSVGElement>) => {
+      if (!svgRef.current) {
+        return;
+      }
+      event.preventDefault();
+      const anchor = graphPointFromClient(svgRef.current, camera, event.clientX, event.clientY);
+      zoomGraph(event.deltaY > 0 ? 1.18 : 1 / 1.18, anchor);
+    },
+    [camera, zoomGraph],
+  );
+
+  return (
+    <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto]">
+      <header className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-black/25 px-3 py-2 text-white">
+        <div className="min-w-0 flex-1 basis-48">
+          <h3 className="truncate font-mono text-sm font-semibold">
+            {baseName(graph.logicalPath)}
+          </h3>
+          <p className="truncate font-mono text-xs text-white/60">
+            {graph.masterFile ?? graph.logicalPath}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex gap-1">
+            {outdoor && (
+              <Button
+                aria-label="24-unit grid"
+                aria-pressed={gridVisible}
+                className={`border-white/10 text-white hover:bg-white/20 hover:text-white ${gridVisible ? "bg-white/20" : "bg-white/5"}`}
+                onClick={() => setGridVisible((visible) => !visible)}
+                size="icon"
+                title="24-unit grid"
+                type="button"
+                variant="outline"
+              >
+                <Grid2X2 />
+              </Button>
+            )}
+            <Button
+              aria-label="Zoom out"
+              className="border-white/10 bg-white/10 text-white hover:bg-white/20 hover:text-white"
+              onClick={() => zoomGraph(1.25)}
+              size="icon"
+              title="Zoom out"
+              type="button"
+              variant="outline"
+            >
+              <ZoomOut />
+            </Button>
+            <Button
+              aria-label="Zoom in"
+              className="border-white/10 bg-white/10 text-white hover:bg-white/20 hover:text-white"
+              onClick={() => zoomGraph(0.8)}
+              size="icon"
+              title="Zoom in"
+              type="button"
+              variant="outline"
+            >
+              <ZoomIn />
+            </Button>
+            <Button
+              aria-label="Fit graph"
+              className="border-white/10 bg-white/10 text-white hover:bg-white/20 hover:text-white"
+              onClick={() => setCamera(fitCamera)}
+              size="icon"
+              title="Fit graph"
+              type="button"
+              variant="outline"
+            >
+              <Maximize2 />
+            </Button>
+          </div>
+          <Badge variant="secondary">{graph.nodes.length} nodes</Badge>
+          <Badge variant="secondary">{graph.edges.length} edges</Badge>
+          {graph.warnings.length > 0 && <Badge variant="warning" title={graph.warnings.join("\n")}>{graph.warnings.length} {graph.warnings.length === 1 ? "warning" : "warnings"}</Badge>}
+        </div>
+      </header>
+
+      <div className="min-h-0 min-w-0 overflow-hidden">
+        <svg
+          aria-label={`Layout graph ${baseName(graph.logicalPath)}`}
+          className="block h-full w-full cursor-grab select-none active:cursor-grabbing"
+          onPointerCancel={handlePointerEnd}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerEnd}
+          onWheel={handleWheel}
+          preserveAspectRatio="xMidYMid meet"
+          ref={svgRef}
+          role="img"
+          style={{ touchAction: "none" }}
+          viewBox={`${camera.minX} ${camera.minY} ${camera.width} ${camera.height}`}
+        >
+          {outdoor && gridVisible && (
+            <defs>
+              <pattern
+                height={24}
+                id={gridId}
+                patternTransform={view.coordinateTransform}
+                patternUnits="userSpaceOnUse"
+                width={24}
+              >
+                <path d="M 24 0 H 0 V 24" fill="none" stroke="#b2c4bf" strokeOpacity={0.25} strokeWidth={0.5} />
+              </pattern>
+            </defs>
+          )}
+          <rect
+            fill="#101716"
+            height={view.height}
+            width={view.width}
+            x={view.minX}
+            y={view.minY}
+          />
+          {outdoor && gridVisible && (
+            <rect
+              aria-hidden="true"
+              data-grid-size={24}
+              fill={`url(#${gridId})`}
+              height={view.height}
+              pointerEvents="none"
+              width={view.width}
+              x={view.minX}
+              y={view.minY}
+            />
+          )}
+          {view.edges.map((edge) => {
+            const from = view.nodesByIndex.get(edge.from);
+            const to = view.nodesByIndex.get(edge.to);
+            if (!from || !to) {
+              return null;
+            }
+            return (
+              <line
+                key={edge.index}
+                stroke={edge.edgeTile?.toLowerCase().includes("void") ? "#5a6261" : "#8fb3a8"}
+                strokeOpacity={0.82}
+                strokeWidth={view.visuals.edgeWidth}
+                x1={from.scaledX}
+                x2={to.scaledX}
+                y1={from.scaledY}
+                y2={to.scaledY}
+              >
+                <title>
+                  {`${edge.from} -> ${edge.to}${edge.edgeTile ? ` ${edge.edgeTile}` : ""}`}
+                </title>
+              </line>
+            );
+          })}
+          {view.nodes.map((node) => {
+            const role = nodeRole(node);
+            const color = nodeRoles[role].color;
+            const labelLines = nodeLabelLines(node);
+            const bossPosition = nodeHasBoss(node) ? bossMarkerPosition(node, view.visuals) : null;
+            return (
+            <g key={node.index} data-room-label={node.label ?? ""} data-node-role={role}>
+              {bossPosition && (
+                <g data-boss-for={node.index}>
+                  <line
+                    x1={node.scaledX}
+                    y1={node.scaledY}
+                    x2={bossPosition.x}
+                    y2={bossPosition.y}
+                    stroke={nodeRoles.boss.color}
+                    strokeOpacity={0.65}
+                    strokeWidth={view.visuals.ringStrokeWidth}
+                  />
+                  <circle
+                    cx={bossPosition.x}
+                    cy={bossPosition.y}
+                    r={view.visuals.nodeRadius * 1.25}
+                    fill={nodeRoles.boss.color}
+                    stroke="#101716"
+                    strokeWidth={view.visuals.nodeStrokeWidth}
+                  />
+                  <text
+                    x={bossPosition.x}
+                    y={bossPosition.y - view.visuals.nodeRingRadius}
+                    textAnchor="middle"
+                    fontSize={view.visuals.labelFontSize * 1.25}
+                    fontWeight="600"
+                    fill={nodeRoles.boss.color}
+                  >
+                    {nodeBossLabel(node)}
+                  </text>
+                  <title>{nodeBossDetails(node)}</title>
+                </g>
+              )}
+              <circle
+                cx={node.scaledX}
+                cy={node.scaledY}
+                fill={color}
+                r={node.label ? view.visuals.labeledNodeRadius : view.visuals.nodeRadius}
+                stroke="#101716"
+                strokeWidth={view.visuals.nodeStrokeWidth}
+              />
+              <circle
+                cx={node.scaledX}
+                cy={node.scaledY}
+                fill="none"
+                r={view.visuals.nodeRingRadius}
+                stroke={color}
+                strokeOpacity="0.78"
+                strokeDasharray={role === "void" ? "4 4" : undefined}
+                strokeWidth={view.visuals.ringStrokeWidth}
+              />
+              <text
+                fill={color}
+                fontSize={view.visuals.indexFontSize}
+                fontWeight="700"
+                textAnchor="middle"
+                x={node.scaledX}
+                y={node.scaledY - view.visuals.indexOffset}
+              >
+                {node.index}
+              </text>
+              {labelLines.length > 0 && (
+                <text
+                  fill="#f7f8f4"
+                  fontSize={view.visuals.labelFontSize}
+                  fontWeight="600"
+                  textAnchor="middle"
+                  x={node.scaledX}
+                  y={node.scaledY + view.visuals.labelOffset}
+                >
+                  {labelLines.map((label, index) => <tspan key={label} x={node.scaledX} dy={index === 0 ? 0 : view.visuals.labelFontSize * 1.25}>{truncateLabel(label, view.visuals.labelMaxLength)}</tspan>)}
+                </text>
+              )}
+              <title>
+                node {node.index}: {node.x}, {node.y}
+                {node.label ? ` ${node.label}` : ""}
+                {`\n${nodeRoles[role].label}\nRotation: ${node.rotation ?? "any"}\nMetadata: ${node.metadata.join(" ")}`}
+                {nodeTransitionDetails(node)}
+              </title>
+            </g>
+            );
+          })}
+        </svg>
+      </div>
+      <footer className="flex flex-wrap gap-x-3 gap-y-1 border-t border-white/10 bg-black/25 px-3 py-1.5 text-[10px] text-white/70" aria-label="Node color legend" title="Roles are inferred from graph labels, metadata tags, and possible ARM boss spawn hooks.">
+        {Object.entries(nodeRoles).map(([role, style]) => (
+          <span className="flex items-center gap-1" key={role}><span className="size-2 rounded-full" style={{ backgroundColor: style.color }} />{style.label}</span>
+        ))}
+      </footer>
+    </div>
+  );
+}
+
 function ZoneInspector({
   zone,
 }: {
@@ -475,8 +958,8 @@ function ZoneInspector({
               Hover Target
             </h4>
             <div className="rounded-md border border-dashed p-3 text-xs leading-5 text-muted-foreground">
-              Pixi hover metadata will land here once nodes and edges expose hit-test
-              details.
+              Node and edge hover metadata will land here once the graph renderer
+              exposes hit-test details.
             </div>
           </section>
         </div>
@@ -494,55 +977,135 @@ function DetailRow({ label, value }: { label: string; value: number | string }) 
   );
 }
 
-function LayoutCandidatesPanel({
-  terrainFiles,
-}: {
-  terrainFiles: TerrainFileSummary[];
-}) {
-  return (
-    <section className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] rounded-md border bg-card shadow-sm">
-      <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
-        <h3 className="text-sm font-semibold">
-          {terrainFiles.length} possible{" "}
-          {terrainFiles.length === 1 ? "layout" : "layouts"}
-        </h3>
-      </div>
+type EnvironmentLoadState =
+  | { status: "loading" }
+  | { status: "ready"; byPath: Map<string, LayoutEnvironment>; warnings: string[] }
+  | { status: "error"; message: string };
 
-      <TerrainTable terrainFiles={terrainFiles} />
-    </section>
+function EnvironmentBadge({ layout, unavailableReason }: {
+  layout: LayoutEnvironment | undefined;
+  unavailableReason: string;
+}) {
+  const environment = layout?.environment ?? "unknown";
+  const styles = {
+    indoor: { label: "Indoor", icon: Home, className: "border-sky-200 bg-sky-50 text-sky-800" },
+    outdoor: { label: "Outdoor", icon: TreePine, className: "border-emerald-200 bg-emerald-50 text-emerald-800" },
+    mixed: { label: "Mixed", icon: Layers, className: "border-amber-200 bg-amber-50 text-amber-800" },
+    unknown: { label: "Unknown", icon: CircleHelp, className: "text-muted-foreground" },
+  }[environment];
+  const Icon = styles.icon;
+  return (
+    <Badge
+      className={`gap-1 whitespace-nowrap ${styles.className}`}
+      title={layout ? `Room-set classification\n${layout.evidence.join("\n")}` : unavailableReason}
+      variant="outline"
+    >
+      <Icon className="size-3" />{styles.label}
+    </Badge>
   );
 }
 
-function TerrainTable({ terrainFiles }: { terrainFiles: TerrainFileSummary[] }) {
+function LayoutPicker({
+  onSelectLayout,
+  selectedLayoutPath,
+  terrainFiles,
+}: {
+  onSelectLayout: (logicalPath: string) => void;
+  selectedLayoutPath: string | null;
+  terrainFiles: TerrainFileSummary[];
+}) {
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function cancelClose() {
+    if (closeTimer.current !== null) clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }
+
+  function openOnHover(event: React.PointerEvent) {
+    cancelClose();
+    if (event.pointerType === "mouse") setOpen(true);
+  }
+
+  function closeOnLeave(event: React.PointerEvent) {
+    if (event.pointerType !== "mouse") return;
+    cancelClose();
+    closeTimer.current = setTimeout(() => setOpen(false), 180);
+  }
+
+  useEffect(() => () => {
+    if (closeTimer.current !== null) clearTimeout(closeTimer.current);
+  }, []);
+
   return (
-    <ScrollArea className="h-full">
-      <div className="grid min-w-[760px] grid-cols-[116px_minmax(0,1fr)_112px] border-b bg-muted/40 px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">
-        <span>Kind</span>
-        <span>Possible Layout</span>
-        <span className="text-right">Status</span>
-      </div>
-      {terrainFiles.map((file) => (
-        <article
-          className="grid min-w-[760px] grid-cols-[116px_minmax(0,1fr)_112px] items-center gap-3 border-b px-3 py-2.5 text-sm last:border-b-0"
-          key={`${file.kind}:${file.logicalPath}:${file.source}`}
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          aria-label="Choose layout"
+          className="max-w-full gap-2 px-3"
+          disabled={terrainFiles.length === 0}
+          onClick={(event) => {
+            if (open && event.detail > 0) event.preventDefault();
+          }}
+          onPointerEnter={openOnHover}
+          onPointerLeave={closeOnLeave}
+          title={selectedLayoutPath ?? "No layouts available"}
+          variant="outline"
         >
-          <strong className="font-medium text-muted-foreground">
-            {terrainKindLabel(file.kind)}
-          </strong>
-          <span className="min-w-0">
-            <span className="block truncate font-mono text-xs">{file.logicalPath}</span>
-            {file.reason && (
-              <small className="block truncate text-xs text-muted-foreground">
-                {file.reason}
-              </small>
-            )}
-          </span>
-          <span className="justify-self-end">
-            <StatusBadge status={file.status} />
-          </span>
-        </article>
-      ))}
-    </ScrollArea>
+          <GitBranch aria-hidden="true" />
+          <span>{layoutCountLabel(terrainFiles.length)}</span>
+          {selectedLayoutPath && <span className="hidden max-w-[200px] truncate font-mono text-xs text-muted-foreground xl:block">{baseName(selectedLayoutPath)}</span>}
+          <ChevronDown aria-hidden="true" className={open ? "rotate-180" : ""} />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        aria-label="Choose layout"
+        className="w-[min(480px,calc(100vw-32px))] overflow-hidden p-0"
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onPointerEnter={cancelClose}
+        onPointerLeave={closeOnLeave}
+      >
+        <header className="border-b px-3 py-2 text-sm font-semibold">Possible layouts</header>
+        <div className="max-h-[min(400px,60vh)] overflow-y-auto p-1">
+          {terrainFiles.map((file) => (
+            <button
+              aria-current={file.logicalPath === selectedLayoutPath ? "true" : undefined}
+              className={[
+                "grid w-full grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm px-2 py-2.5 text-left text-sm outline-none transition-colors",
+                "hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+                file.logicalPath === selectedLayoutPath
+                  ? "bg-accent/80 shadow-[inset_3px_0_0_hsl(var(--primary))]"
+                  : "",
+              ].join(" ")}
+              disabled={file.status !== TerrainFileStatus.Extracted}
+              key={`${file.kind}:${file.logicalPath}:${file.source}`}
+              onClick={() => {
+                onSelectLayout(file.logicalPath);
+                cancelClose();
+                setOpen(false);
+              }}
+              title={file.logicalPath}
+              type="button"
+            >
+              {file.logicalPath === selectedLayoutPath ? <CheckCircle2 aria-hidden="true" className="size-4 text-primary" /> : <span />}
+              <span className="min-w-0">
+                <span className="block truncate font-mono text-xs font-medium">{baseName(file.logicalPath)}</span>
+                <span className="block truncate text-[10px] text-muted-foreground">{file.logicalPath}</span>
+                {file.reason && (
+                  <small className="block truncate text-xs text-muted-foreground">
+                    {file.reason}
+                  </small>
+                )}
+              </span>
+              <span className="justify-self-end">
+                <StatusBadge status={file.status} />
+              </span>
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -886,28 +1449,245 @@ function StatusBadge({ status }: { status: TerrainFileStatus }) {
   );
 }
 
-function ToolbarButton({
-  children,
-  label,
-}: {
-  children: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          className="border-white/15 bg-black/35 text-white backdrop-blur hover:bg-black/50"
-          size="icon"
-          type="button"
-          variant="outline"
-        >
-          {children}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  );
+type ScaledLayoutNode = LayoutGraphNode & {
+  scaledX: number;
+  scaledY: number;
+};
+
+type LayoutGraphView = {
+  coordinateTransform: string;
+  edges: LayoutGraph["edges"];
+  height: number;
+  minX: number;
+  minY: number;
+  nodes: ScaledLayoutNode[];
+  nodesByIndex: Map<number, ScaledLayoutNode>;
+  visuals: LayoutGraphVisuals;
+  width: number;
+};
+
+type LayoutGraphVisuals = {
+  edgeWidth: number;
+  indexFontSize: number;
+  indexOffset: number;
+  labelFontSize: number;
+  labelMaxLength: number;
+  labelOffset: number;
+  labeledNodeRadius: number;
+  nodeRadius: number;
+  nodeRingRadius: number;
+  nodeStrokeWidth: number;
+  ringStrokeWidth: number;
+};
+
+type GraphCamera = {
+  height: number;
+  minX: number;
+  minY: number;
+  width: number;
+};
+
+type GraphDrag = {
+  camera: GraphCamera;
+  pointerId: number;
+  startX: number;
+  startY: number;
+};
+
+type GraphPoint = {
+  x: number;
+  y: number;
+};
+
+function layoutGraphView(graph: LayoutGraph): LayoutGraphView {
+  const xValues = graph.nodes.map((node) => node.x);
+  const yValues = graph.nodes.map((node) => node.y);
+  const minRawX = Math.min(...xValues, 0);
+  const maxRawX = Math.max(...xValues, 1);
+  const minRawY = Math.min(...yValues, 0);
+  const maxRawY = Math.max(...yValues, 1);
+  const scale = 3;
+  const padding = 72;
+  const unrotatedWidth = (maxRawX - minRawX) * scale;
+  const unrotatedHeight = (maxRawY - minRawY) * scale;
+  const centerX = unrotatedWidth / 2;
+  const centerY = unrotatedHeight / 2;
+  const rotation = -Math.PI / 4;
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const rotatedNodes = graph.nodes.map((node) => {
+    const x = (node.x - minRawX) * scale;
+    const y = (node.y - minRawY) * scale;
+    const dx = x - centerX;
+    const dy = y - centerY;
+    return {
+      node,
+      x: dx * cos - dy * sin + centerX,
+      y: dx * sin + dy * cos + centerY,
+    };
+  });
+  const minRotatedX = Math.min(...rotatedNodes.map((node) => node.x), 0);
+  const maxRotatedX = Math.max(...rotatedNodes.map((node) => node.x), 1);
+  const minRotatedY = Math.min(...rotatedNodes.map((node) => node.y), 0);
+  const maxRotatedY = Math.max(...rotatedNodes.map((node) => node.y), 1);
+  const rotatedWidth = maxRotatedX - minRotatedX;
+  const rotatedHeight = maxRotatedY - minRotatedY;
+  const width = Math.max(rotatedWidth + padding * 2, 760);
+  const height = Math.max(rotatedHeight + padding * 2, 520);
+  const xOffset = (width - rotatedWidth) / 2 - minRotatedX;
+  const yOffset = (height - rotatedHeight) / 2 - minRotatedY;
+  const originX = -minRawX * scale - centerX;
+  const originY = -minRawY * scale - centerY;
+  const translatedOriginX = originX * cos - originY * sin + centerX + xOffset;
+  const translatedOriginY = originX * sin + originY * cos + centerY + yOffset;
+  const coordinateTransform = `matrix(${scale * cos} ${scale * sin} ${-scale * sin} ${scale * cos} ${translatedOriginX} ${translatedOriginY})`;
+  const nodes = rotatedNodes.map(({ node, x, y }) => ({
+    ...node,
+    scaledX: x + xOffset,
+    scaledY: y + yOffset,
+  }));
+  const visuals = layoutGraphVisuals(width, height);
+  const bossPositions = nodes.filter(nodeHasBoss).map((node) => bossMarkerPosition(node, visuals));
+  const minX = Math.min(0, ...bossPositions.map(({ x }) => x - visuals.labelFontSize * 4 - 12));
+  const minY = Math.min(0, ...bossPositions.map(({ y }) => y - visuals.nodeRingRadius - visuals.labelFontSize * 1.25 - 12));
+  const maxX = Math.max(width, ...bossPositions.map(({ x }) => x + visuals.labelFontSize * 4 + 12));
+  const maxY = Math.max(height, ...bossPositions.map(({ y }) => y + visuals.nodeRadius * 1.25 + 12));
+
+  return {
+    coordinateTransform,
+    edges: graph.edges,
+    height: maxY - minY,
+    minX,
+    minY,
+    nodes,
+    nodesByIndex: new Map(nodes.map((node) => [node.index, node])),
+    visuals,
+    width: maxX - minX,
+  };
+}
+
+function bossMarkerPosition(node: ScaledLayoutNode, visuals: LayoutGraphVisuals): GraphPoint {
+  return {
+    x: node.scaledX + visuals.nodeRingRadius * 3,
+    y: node.scaledY - visuals.nodeRingRadius * 2,
+  };
+}
+
+function layoutGraphVisuals(width: number, height: number): LayoutGraphVisuals {
+  const scale = clamp(Math.max(width / 860, height / 560), 1, 4.5);
+  return {
+    edgeWidth: clamp(3 * scale, 3, 9),
+    indexFontSize: 10 * scale,
+    indexOffset: 20 * scale,
+    labelFontSize: 11 * scale,
+    labelMaxLength: Math.round(clamp(18 * scale, 18, 34)),
+    labelOffset: 30 * scale,
+    labeledNodeRadius: 11 * scale,
+    nodeRadius: 8 * scale,
+    nodeRingRadius: 15 * scale,
+    nodeStrokeWidth: clamp(3 * scale, 3, 9),
+    ringStrokeWidth: clamp(2 * scale, 2, 7),
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function cameraFromView(view: LayoutGraphView): GraphCamera {
+  return {
+    height: view.height,
+    minX: view.minX,
+    minY: view.minY,
+    width: view.width,
+  };
+}
+
+function cameraCenter(camera: GraphCamera): GraphPoint {
+  return {
+    x: camera.minX + camera.width / 2,
+    y: camera.minY + camera.height / 2,
+  };
+}
+
+function zoomCamera(
+  camera: GraphCamera,
+  anchor: GraphPoint,
+  factor: number,
+  minWidth: number,
+  maxWidth: number,
+): GraphCamera {
+  const clampedWidth = Math.min(Math.max(camera.width * factor, minWidth), maxWidth);
+  const scale = clampedWidth / camera.width;
+  const width = camera.width * scale;
+  const height = camera.height * scale;
+  const anchorRatioX = (anchor.x - camera.minX) / camera.width;
+  const anchorRatioY = (anchor.y - camera.minY) / camera.height;
+  return {
+    height,
+    minX: anchor.x - anchorRatioX * width,
+    minY: anchor.y - anchorRatioY * height,
+    width,
+  };
+}
+
+function graphPointFromClient(
+  svg: SVGSVGElement,
+  camera: GraphCamera,
+  clientX: number,
+  clientY: number,
+): GraphPoint {
+  const viewport = graphViewport(svg, camera);
+  return {
+    x:
+      camera.minX +
+      ((clientX - viewport.left) / viewport.width) * camera.width,
+    y:
+      camera.minY +
+      ((clientY - viewport.top) / viewport.height) * camera.height,
+  };
+}
+
+function graphDeltaFromClientDelta(
+  svg: SVGSVGElement,
+  camera: GraphCamera,
+  deltaX: number,
+  deltaY: number,
+): GraphPoint {
+  const viewport = graphViewport(svg, camera);
+  return {
+    x: (deltaX / viewport.width) * camera.width,
+    y: (deltaY / viewport.height) * camera.height,
+  };
+}
+
+function graphViewport(svg: SVGSVGElement, camera: GraphCamera) {
+  const bounds = svg.getBoundingClientRect();
+  const viewportAspect = bounds.width / bounds.height;
+  const cameraAspect = camera.width / camera.height;
+  if (viewportAspect > cameraAspect) {
+    const width = bounds.height * cameraAspect;
+    return {
+      height: bounds.height,
+      left: bounds.left + (bounds.width - width) / 2,
+      top: bounds.top,
+      width,
+    };
+  }
+  const height = bounds.width / cameraAspect;
+  return {
+    height,
+    left: bounds.left,
+    top: bounds.top + (bounds.height - height) / 2,
+    width: bounds.width,
+  };
+}
+
+function truncateLabel(label: string, maxLength: number): string {
+  if (label.length <= maxLength) {
+    return label;
+  }
+  return `${label.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function filterZones(zones: ZoneSummary[], query: string): ZoneSummary[] {

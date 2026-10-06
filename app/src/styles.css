@@ -57,7 +57,7 @@
 
 body {
   margin: 0;
-  min-width: 1060px;
+  min-width: 720px;
   min-height: 680px;
   overflow: hidden;
   background: hsl(var(--background));
