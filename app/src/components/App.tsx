@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
   Bug,
   ChevronDown,
   ChevronRight,
@@ -27,6 +29,14 @@ import { TerrainFileStatus } from "../generated/poe-layouts/terrain-file-status"
 import { TerrainFileKind } from "../generated/poe-layouts/terrain-file-kind";
 import { nodeBossDetails, nodeBossLabel, nodeHasBoss, nodeRole, nodeRoles } from "../data/nodeHighlights";
 import { RoomList, RoomPicker, useRoomWorkspace } from "./RoomList";
+import { WarningBadge } from "./WarningBadge";
+import { NodeRotationPicker } from "./NodeRotationPicker";
+import { GraphWorkspaceProvider, useGraphWorkspace } from "./GraphWorkspace";
+import { GraphNodeDetails } from "./GraphNodeDetails";
+import { ExplorerNavigationProvider, useExplorerNavigation } from "./ExplorerNavigation";
+import { isWorkspaceTab } from "../data/navigation";
+import { adjacentLayout, layoutKeyStep, type LayoutKeyRepeat } from "../data/layoutNavigation";
+import { nodeCanvas, nodeRotationDegrees, rotateNodePoint, type NodeRotation, type RotationDirection } from "../data/nodeRotation";
 import { loadLayoutEnvironments, type LayoutEnvironment } from "../data/layoutEnvironment";
 import {
   loadLayoutGraph,
@@ -65,18 +75,17 @@ type LoadState =
   | { status: "error"; message: string };
 
 export function App() {
+  return <ExplorerNavigationProvider><ExplorerApp /></ExplorerNavigationProvider>;
+}
+
+function ExplorerApp() {
+  const { navigation, navigate } = useExplorerNavigation();
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
   const [query, setQuery] = useState("");
-  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
 
   const reloadLayoutData = useCallback(async () => {
     const data = await loadLayoutData();
     setLoadState({ status: "ready", data });
-    setSelectedZoneId((currentZoneId) =>
-      currentZoneId && data.zones.some((zone) => zone.id === currentZoneId)
-        ? currentZoneId
-        : data.zones[0]?.id ?? null,
-    );
     return data;
   }, []);
 
@@ -88,6 +97,13 @@ export function App() {
       });
     });
   }, [reloadLayoutData]);
+
+  useEffect(() => {
+    if (loadState.status !== "ready") return;
+    const zone = loadState.data.zones.find((candidate) => candidate.id === navigation.zone)
+      ?? loadState.data.zones[0];
+    if (navigation.zone !== (zone?.id ?? null)) navigate({ zone: zone?.id ?? null }, "replace");
+  }, [loadState, navigation.zone, navigate]);
 
   if (loadState.status === "loading") {
     return (
@@ -117,9 +133,9 @@ export function App() {
     <LayoutExplorer
       data={loadState.data}
       query={query}
-      selectedZoneId={selectedZoneId}
+      selectedZoneId={navigation.zone}
       onQueryChange={setQuery}
-      onSelectZone={setSelectedZoneId}
+      onSelectZone={(zone) => navigate({ zone })}
     />
   );
 }
@@ -145,13 +161,13 @@ function LayoutExplorer({
     [data.zones, query],
   );
   const selectedZone =
-    filteredZones.find((zone) => zone.id === selectedZoneId) ??
-    filteredZones[0] ??
+    data.zones.find((zone) => zone.id === selectedZoneId) ??
     data.zones[0] ??
     null;
-  const selectedTerrain = selectedZone
-    ? terrainFilesForZone(data, selectedZone)
-    : [];
+  const selectedTerrain = useMemo(
+    () => selectedZone ? terrainFilesForZone(data, selectedZone) : [],
+    [data, selectedZone],
+  );
   const layoutCountsByZoneId = useMemo(
     () => layoutCountsByZone(data),
     [data],
@@ -202,7 +218,7 @@ function LayoutExplorer({
         />
       </aside>
 
-      <WorkspaceTabs gameVersion={data.gameVersion} selectedTerrain={selectedTerrain} selectedZone={selectedZone} />
+      <WorkspaceTabs key={selectedZone?.id} gameVersion={data.gameVersion} selectedTerrain={selectedTerrain} selectedZone={selectedZone} />
     </main>
   );
 }
@@ -288,8 +304,9 @@ function WorkspaceTabs({
   selectedTerrain: TerrainFileSummary[];
   selectedZone: ZoneSummary | null;
 }) {
+  const { navigation, navigate } = useExplorerNavigation();
   const [environments, setEnvironments] = useState<EnvironmentLoadState>({ status: "loading" });
-  const [activeTab, setActiveTab] = useState("layouts");
+  const activeTab = navigation.tab;
   useEffect(() => {
     let cancelled = false;
     setEnvironments({ status: "loading" });
@@ -319,28 +336,51 @@ function WorkspaceTabs({
       ),
     [selectedTerrain],
   );
-  const [selectedLayoutPath, setSelectedLayoutPath] = useState<string | null>(
-    null,
-  );
+  const selectedLayoutPath = graphCandidates.find((file) => file.logicalPath === navigation.layout)?.logicalPath
+    ?? graphCandidates[0]?.logicalPath ?? null;
+  const setSelectedLayoutPath = (layout: string) => navigate({ layout });
   const roomLayoutPaths = useMemo(
     () => [...new Set(graphCandidates.map((file) => file.logicalPath))],
     [graphCandidates],
   );
+  const previousLayoutPath = adjacentLayout(roomLayoutPaths, selectedLayoutPath, -1);
+  const nextLayoutPath = adjacentLayout(roomLayoutPaths, selectedLayoutPath, 1);
+  const canvasRegionRef = useRef<HTMLElement | null>(null);
+  const restoreCanvasFocus = useRef(false);
+  const layoutKeyRepeatRef = useRef<LayoutKeyRepeat | null>(null);
+  useEffect(() => {
+    const reset = () => { layoutKeyRepeatRef.current = null; };
+    const release = (event: KeyboardEvent) => {
+      if (event.key === layoutKeyRepeatRef.current?.key) reset();
+    };
+    const hide = () => { if (document.hidden) reset(); };
+    window.addEventListener("keyup", release);
+    window.addEventListener("blur", reset);
+    document.addEventListener("visibilitychange", hide);
+    return () => {
+      window.removeEventListener("keyup", release);
+      window.removeEventListener("blur", reset);
+      document.removeEventListener("visibilitychange", hide);
+    };
+  }, []);
+  useEffect(() => {
+    if (restoreCanvasFocus.current) {
+      restoreCanvasFocus.current = false;
+      canvasRegionRef.current?.focus({ preventScroll: true });
+    }
+  }, [selectedLayoutPath]);
   const roomWorkspace = useRoomWorkspace(roomLayoutPaths, selectedLayoutPath);
   useEffect(() => {
-    setSelectedLayoutPath((currentPath) =>
-      currentPath &&
-      graphCandidates.some((file) => file.logicalPath === currentPath)
-        ? currentPath
-        : graphCandidates[0]?.logicalPath ?? null,
-    );
-  }, [graphCandidates]);
+    if (navigation.zone === selectedZone?.id && navigation.layout !== selectedLayoutPath) {
+      navigate({ layout: selectedLayoutPath }, "replace");
+    }
+  }, [navigation.zone, navigation.layout, selectedZone?.id, selectedLayoutPath, navigate]);
 
   return (
     <Tabs
       className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-3 p-4"
       value={activeTab}
-      onValueChange={setActiveTab}
+      onValueChange={(tab) => { if (isWorkspaceTab(tab)) navigate({ tab }); }}
     >
       <WorkspaceHeader
         selectedTerrain={selectedTerrain}
@@ -353,6 +393,8 @@ function WorkspaceTabs({
           <LayoutPicker
             key={selectedZone?.id}
             onSelectLayout={setSelectedLayoutPath}
+            previousLayoutPath={previousLayoutPath}
+            nextLayoutPath={nextLayoutPath}
             selectedLayoutPath={selectedLayoutPath}
             terrainFiles={selectedTerrain.filter((file) => file.kind === TerrainFileKind.Graph)}
           />
@@ -363,8 +405,33 @@ function WorkspaceTabs({
         className="grid min-h-0 min-w-0 overflow-hidden data-[state=inactive]:hidden"
         value="layouts"
       >
+        <GraphWorkspaceProvider key={`${selectedZone?.id}:${selectedLayoutPath}`}>
         <section className="grid min-h-0 grid-cols-[minmax(0,1fr)_240px] gap-3 xl:grid-cols-[minmax(0,1fr)_320px]">
-          <section className="relative min-h-0 overflow-hidden rounded-md border border-foreground/20 bg-[#101716] shadow-sm">
+          <section
+            aria-label="Layout canvas"
+            className="relative min-h-0 overflow-hidden rounded-md border border-foreground/20 bg-[#101716] shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            ref={canvasRegionRef}
+            tabIndex={0}
+            onPointerDownCapture={(event) => {
+              const target = event.target as Element;
+              if (event.button === 0 && target.closest('svg[role="group"]') && !target.closest("[data-node-index]")) {
+                event.currentTarget.focus({ preventScroll: true });
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const repeat = layoutKeyStep(layoutKeyRepeatRef.current, event.key, event.repeat, performance.now());
+              layoutKeyRepeatRef.current = repeat.state;
+              if (!repeat.step) return;
+              const path = event.key === "ArrowLeft" ? previousLayoutPath : nextLayoutPath;
+              if (path) {
+                restoreCanvasFocus.current = true;
+                setSelectedLayoutPath(path);
+              }
+            }}
+          >
             <LayoutGraphPreview
               logicalPath={selectedLayoutPath}
               outdoor={environments.status === "ready" && environments.byPath.get(selectedLayoutPath ?? "")?.environment === "outdoor"}
@@ -374,6 +441,7 @@ function WorkspaceTabs({
 
           <ZoneInspector zone={selectedZone} />
         </section>
+        </GraphWorkspaceProvider>
 
       </TabsContent>
 
@@ -410,7 +478,7 @@ function WorkspaceHeader({
 }) {
   const missing = selectedTerrain.filter(
     (file) => file.status === TerrainFileStatus.Missing,
-  ).length;
+  ).map((file) => `${file.logicalPath}: ${file.reason ?? "File was not extracted"}`);
   const zoneTsiPath = selectedZone?.tsiFile?.replace(/\\/g, "/").toLowerCase();
   const environment = environments.status === "ready"
     ? environments.byPath.get(zoneTsiPath ?? "") ?? environments.byPath.get(fallbackLayoutPath ?? "")
@@ -430,13 +498,8 @@ function WorkspaceHeader({
           </h2>
           {selectedZone && <EnvironmentBadge layout={environment} unavailableReason={unavailableReason} />}
         </div>
-        {environments.status === "ready" && environments.warnings.length > 0 && <Badge title={environments.warnings.join("\n")} variant="warning">{environments.warnings.length} environment warnings</Badge>}
-        {missing > 0 && (
-          <Badge variant="warning">
-            <AlertTriangle className="mr-1 size-3" />
-            {missing} missing
-          </Badge>
-        )}
+        {environments.status === "ready" && <WarningBadge label="Environment warnings" warnings={environments.warnings}>{environments.warnings.length} environment warnings</WarningBadge>}
+        <WarningBadge label="Missing terrain files" warnings={missing}>{missing.length} missing</WarningBadge>
       </div>
 
       <div className="flex min-w-0 flex-wrap items-center gap-3">
@@ -532,6 +595,7 @@ function DebugStat({
 }
 
 function LayoutGraphPreview({ logicalPath, outdoor, zoneId }: { logicalPath: string | null; outdoor: boolean; zoneId?: string }) {
+  const { dispatch } = useGraphWorkspace();
   const [loadState, setLoadState] = useState<
     | { status: "idle" }
     | { status: "loading" }
@@ -549,6 +613,7 @@ function LayoutGraphPreview({ logicalPath, outdoor, zoneId }: { logicalPath: str
     loadLayoutGraph(logicalPath, zoneId)
       .then((graph) => {
         if (!cancelled) {
+          dispatch({ type: "load", graph });
           setLoadState({ status: "ready", graph });
         }
       })
@@ -563,7 +628,7 @@ function LayoutGraphPreview({ logicalPath, outdoor, zoneId }: { logicalPath: str
     return () => {
       cancelled = true;
     };
-  }, [logicalPath, zoneId]);
+  }, [logicalPath, zoneId, dispatch]);
 
   if (!logicalPath) {
     return (
@@ -599,9 +664,13 @@ function LayoutGraphPreview({ logicalPath, outdoor, zoneId }: { logicalPath: str
 }
 
 function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boolean }) {
+  const { state, dispatch } = useGraphWorkspace();
   const gridId = useId();
   const [gridVisible, setGridVisible] = useState(true);
-  const view = useMemo(() => layoutGraphView(graph), [graph]);
+  const [pickerNode, setPickerNode] = useState<number | null>(null);
+  const nodeRotations = state.rotations;
+  const canvas = nodeCanvas(graph.width, graph.height);
+  const view = useMemo(() => layoutGraphView(graph, nodeRotations, state.direction), [graph, nodeRotations, state.direction]);
   const fitCamera = useMemo(() => cameraFromView(view), [view]);
   const [camera, setCamera] = useState<GraphCamera>(fitCamera);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -609,9 +678,12 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
 
   useEffect(() => {
     setCamera(fitCamera);
-    setGridVisible(true);
     dragRef.current = null;
-  }, [fitCamera]);
+  }, [graph, fitCamera.minX, fitCamera.minY, fitCamera.width, fitCamera.height]);
+
+  useEffect(() => {
+    setGridVisible(true);
+  }, [graph]);
 
   const zoomGraph = useCallback(
     (factor: number, anchor?: GraphPoint) => {
@@ -639,6 +711,8 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
+        nodeIndex: (event.target as Element).closest("[data-node-index]")?.getAttribute("data-node-index") ?? null,
+        moved: false,
       };
     },
     [camera],
@@ -649,6 +723,8 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
     if (!drag || drag.pointerId !== event.pointerId || !svgRef.current) {
       return;
     }
+    if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 4) drag.moved = true;
+    if (!drag.moved) return;
     const delta = graphDeltaFromClientDelta(
       svgRef.current,
       drag.camera,
@@ -664,9 +740,15 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
 
   const handlePointerEnd = useCallback((event: React.PointerEvent<SVGSVGElement>) => {
     if (dragRef.current?.pointerId === event.pointerId) {
+      const drag = dragRef.current;
+      if (event.type === "pointerup" && !drag.moved && drag.nodeIndex !== null) {
+        const index = Number(drag.nodeIndex);
+        dispatch({ type: "select", index });
+        setPickerNode(index);
+      }
       dragRef.current = null;
     }
-  }, []);
+  }, [dispatch]);
 
   const handleWheel = useCallback(
     (event: React.WheelEvent<SVGSVGElement>) => {
@@ -743,7 +825,7 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
           </div>
           <Badge variant="secondary">{graph.nodes.length} nodes</Badge>
           <Badge variant="secondary">{graph.edges.length} edges</Badge>
-          {graph.warnings.length > 0 && <Badge variant="warning" title={graph.warnings.join("\n")}>{graph.warnings.length} {graph.warnings.length === 1 ? "warning" : "warnings"}</Badge>}
+          <WarningBadge label="Layout warnings" warnings={graph.warnings} />
         </div>
       </header>
 
@@ -754,11 +836,12 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
           onPointerCancel={handlePointerEnd}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
+          onPointerLeave={() => dispatch({ type: "hover", index: null })}
           onPointerUp={handlePointerEnd}
           onWheel={handleWheel}
           preserveAspectRatio="xMidYMid meet"
           ref={svgRef}
-          role="img"
+          role="group"
           style={{ touchAction: "none" }}
           viewBox={`${camera.minX} ${camera.minY} ${camera.width} ${camera.height}`}
         >
@@ -822,8 +905,47 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
             const color = nodeRoles[role].color;
             const labelLines = nodeLabelLines(node);
             const bossPosition = nodeHasBoss(node) ? bossMarkerPosition(node, view.visuals) : null;
+            const rotation = nodeRotations[node.index];
+            const point = canvas && rotation ? rotateNodePoint(node, canvas, rotation, state.direction) : node;
+            const direction = state.direction === "clockwise" ? "CW" : "CCW";
             return (
-            <g key={node.index} data-room-label={node.label ?? ""} data-node-role={role}>
+            <NodeRotationPicker
+              key={node.index}
+              node={node}
+              canvas={canvas}
+              rotation={rotation}
+              direction={state.direction}
+              open={pickerNode === node.index}
+              onOpenChange={(open) => {
+                if (open) dispatch({ type: "select", index: node.index });
+                setPickerNode((current) => open ? node.index : current === node.index ? null : current);
+              }}
+              onRotationChange={(rotation) => dispatch({ type: "rotate", index: node.index, rotation })}
+              onDirectionChange={(direction) => dispatch({ type: "direction", direction })}
+            >
+            <g
+              aria-label={`Node ${node.index}${node.label ? ` ${node.label}` : ""}`}
+              className="cursor-pointer outline-none focus-visible:[&>circle]:stroke-white"
+              data-node-index={node.index}
+              data-test-rotation={rotation}
+              data-room-label={node.label ?? ""}
+              data-node-role={role}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  dispatch({ type: "select", index: node.index });
+                  setPickerNode(node.index);
+                }
+              }}
+              onPointerEnter={() => {
+                if (!dragRef.current) dispatch({ type: "hover", index: node.index });
+              }}
+              onPointerLeave={() => dispatch({ type: "leave", index: node.index })}
+              onFocus={() => dispatch({ type: "hover", index: node.index })}
+              onBlur={() => dispatch({ type: "leave", index: node.index })}
+              role="button"
+              tabIndex={0}
+            >
               {bossPosition && (
                 <g data-boss-for={node.index}>
                   <line
@@ -874,6 +996,18 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
                 strokeDasharray={role === "void" ? "4 4" : undefined}
                 strokeWidth={view.visuals.ringStrokeWidth}
               />
+              {rotation && <line
+                aria-hidden="true"
+                data-orientation-marker="true"
+                pointerEvents="none"
+                x1={node.scaledX}
+                y1={node.scaledY}
+                x2={node.scaledX}
+                y2={node.scaledY - view.visuals.nodeRingRadius}
+                stroke="#ffffff"
+                strokeWidth={view.visuals.ringStrokeWidth}
+                transform={`rotate(${nodeRotationDegrees(rotation, state.direction) - 45} ${node.scaledX} ${node.scaledY})`}
+              />}
               <text
                 fill={color}
                 fontSize={view.visuals.indexFontSize}
@@ -897,12 +1031,14 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
                 </text>
               )}
               <title>
-                node {node.index}: {node.x}, {node.y}
+                node {node.index}
                 {node.label ? ` ${node.label}` : ""}
-                {`\n${nodeRoles[role].label}\nRotation: ${node.rotation ?? "any"}\nMetadata: ${node.metadata.join(" ")}`}
+                {`\n${nodeRoles[role].label}\nSource rotation: ${node.rotation ?? "any"}\nRaw position: ${node.x}, ${node.y}\nCurrent position: ${point.x}, ${point.y}\nMetadata: ${node.metadata.join(" ")}`}
+                {rotation ? `\nTest rotation: ${rotation} ${direction}` : ""}
                 {nodeTransitionDetails(node)}
               </title>
             </g>
+            </NodeRotationPicker>
             );
           })}
         </svg>
@@ -921,6 +1057,10 @@ function ZoneInspector({
 }: {
   zone: ZoneSummary | null;
 }) {
+  const { state } = useGraphWorkspace();
+  const graph = state.graph;
+  const canvas = graph ? nodeCanvas(graph.width, graph.height) : null;
+  const namedRooms = new Set(graph?.nodes.flatMap((node) => node.label ? [node.label] : [])).size;
   if (!zone) {
     return (
       <aside className="rounded-md border bg-card p-4 text-sm text-muted-foreground">
@@ -934,7 +1074,7 @@ function ZoneInspector({
       <header className="flex items-center justify-between gap-3 border-b px-3 py-2.5">
         <div>
           <h3 className="text-sm font-semibold">Selection Metadata</h3>
-          <p className="text-xs text-muted-foreground">Zone and hover target</p>
+          <p className="text-xs text-muted-foreground">Zone and node metadata</p>
         </div>
         <Badge variant={zone.isTown ? "secondary" : "outline"}>
           {zone.isTown ? <Home className="mr-1 size-3" /> : <MapIcon className="mr-1 size-3" />}
@@ -952,16 +1092,34 @@ function ZoneInspector({
 
           <Separator />
 
-          <section className="space-y-2">
-            <h4 className="flex items-center gap-2 text-sm font-semibold">
-              <GitBranch className="size-4 text-muted-foreground" />
-              Hover Target
-            </h4>
-            <div className="rounded-md border border-dashed p-3 text-xs leading-5 text-muted-foreground">
-              Node and edge hover metadata will land here once the graph renderer
-              exposes hit-test details.
-            </div>
+          <section aria-label="Layout metadata" className="space-y-3">
+            <h4 className="text-sm font-semibold">Layout</h4>
+            {graph ? (
+              <>
+                <p className="break-all font-mono text-xs" title={graph.logicalPath}>{baseName(graph.logicalPath)}</p>
+                <dl className="space-y-2 text-sm">
+                  <DetailRow label="Format" value={`${graph.logicalPath.split(".").at(-1)?.toUpperCase() ?? "Graph"}${graph.version === null ? "" : ` v${graph.version}`}`} />
+                  <div title="Declared Size header from the selected layout file; not confirmed final generated zone bounds.">
+                    <DetailRow label="Layout size" value={graph.width !== null && graph.height !== null ? `${graph.width} x ${graph.height}` : "Not declared"} />
+                  </div>
+                  <div title="Declared Size multiplied by 24, used for the viewer's rotation tests.">
+                    <DetailRow label="Test canvas" value={canvas ? `${canvas.width} x ${canvas.height} units` : "Unavailable"} />
+                  </div>
+                  <DetailRow label="Nodes" value={graph.nodes.length} />
+                  <DetailRow label="Edges" value={graph.edges.length} />
+                  <DetailRow label="Room labels" value={namedRooms} />
+                </dl>
+                {graph.masterFile && <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">Master file</p>
+                  <p className="break-all font-mono text-[10px] text-muted-foreground">{graph.masterFile}</p>
+                </div>}
+              </>
+            ) : <p className="text-xs text-muted-foreground">Layout metadata unavailable</p>}
           </section>
+
+          <Separator />
+
+          <GraphNodeDetails />
         </div>
       </ScrollArea>
     </aside>
@@ -1009,10 +1167,14 @@ function LayoutPicker({
   onSelectLayout,
   selectedLayoutPath,
   terrainFiles,
+  previousLayoutPath,
+  nextLayoutPath,
 }: {
   onSelectLayout: (logicalPath: string) => void;
   selectedLayoutPath: string | null;
   terrainFiles: TerrainFileSummary[];
+  previousLayoutPath: string | null;
+  nextLayoutPath: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1038,6 +1200,15 @@ function LayoutPicker({
   }, []);
 
   return (
+    <div className="flex min-w-0 items-center gap-1">
+      <Button
+        aria-label="Previous layout"
+        disabled={previousLayoutPath === null}
+        onClick={() => { if (previousLayoutPath) onSelectLayout(previousLayoutPath); }}
+        size="icon"
+        title="Previous layout"
+        variant="outline"
+      ><ArrowLeft aria-hidden="true" /></Button>
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
@@ -1106,6 +1277,15 @@ function LayoutPicker({
         </div>
       </PopoverContent>
     </Popover>
+      <Button
+        aria-label="Next layout"
+        disabled={nextLayoutPath === null}
+        onClick={() => { if (nextLayoutPath) onSelectLayout(nextLayoutPath); }}
+        size="icon"
+        title="Next layout"
+        variant="outline"
+      ><ArrowRight aria-hidden="true" /></Button>
+    </div>
   );
 }
 
@@ -1492,6 +1672,8 @@ type GraphDrag = {
   pointerId: number;
   startX: number;
   startY: number;
+  nodeIndex: string | null;
+  moved: boolean;
 };
 
 type GraphPoint = {
@@ -1499,9 +1681,15 @@ type GraphPoint = {
   y: number;
 };
 
-function layoutGraphView(graph: LayoutGraph): LayoutGraphView {
-  const xValues = graph.nodes.map((node) => node.x);
-  const yValues = graph.nodes.map((node) => node.y);
+function layoutGraphView(graph: LayoutGraph, rotations: Partial<Record<number, NodeRotation>>, direction: RotationDirection): LayoutGraphView {
+  const canvas = nodeCanvas(graph.width, graph.height);
+  const points = graph.nodes.map((node) => {
+    const rotation = rotations[node.index];
+    const point = canvas && rotation ? rotateNodePoint(node, canvas, rotation, direction) : node;
+    return { node, x: point.x, y: point.y };
+  });
+  const xValues = points.map((point) => point.x);
+  const yValues = points.map((point) => point.y);
   const minRawX = Math.min(...xValues, 0);
   const maxRawX = Math.max(...xValues, 1);
   const minRawY = Math.min(...yValues, 0);
@@ -1515,13 +1703,13 @@ function layoutGraphView(graph: LayoutGraph): LayoutGraphView {
   const rotation = -Math.PI / 4;
   const cos = Math.cos(rotation);
   const sin = Math.sin(rotation);
-  const rotatedNodes = graph.nodes.map((node) => {
-    const x = (node.x - minRawX) * scale;
-    const y = (node.y - minRawY) * scale;
+  const rotatedNodes = points.map((point) => {
+    const x = (point.x - minRawX) * scale;
+    const y = (point.y - minRawY) * scale;
     const dx = x - centerX;
     const dy = y - centerY;
     return {
-      node,
+      node: point.node,
       x: dx * cos - dy * sin + centerX,
       y: dx * sin + dy * cos + centerY,
     };

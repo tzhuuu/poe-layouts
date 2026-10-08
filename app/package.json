@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test": "node --test tests/*.test.ts",
     "generate:schema": "cargo check -p pather-schema",
     "predev": "npm run generate:schema",
     "dev": "vite --host 127.0.0.1",

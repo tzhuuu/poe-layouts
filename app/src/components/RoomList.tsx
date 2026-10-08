@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Box, CheckCircle2, ChevronDown, Layers, Search } from "lucide-react";
+import { Box, CheckCircle2, ChevronDown, Layers, Search } from "lucide-react";
 import { loadLayoutRooms, type LayoutRooms } from "../data/layoutRooms";
 import type { RoomVariant } from "../data/roomVariants";
 import { RoomPreview } from "../render/RoomPreview";
@@ -7,6 +7,8 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { HoverPopover } from "./ui/hover-popover";
 import { Input } from "./ui/input";
+import { WarningBadge } from "./WarningBadge";
+import { useExplorerNavigation } from "./ExplorerNavigation";
 
 type RoomListState =
   | { status: "loading" }
@@ -14,17 +16,16 @@ type RoomListState =
   | { status: "error"; message: string };
 
 export function useRoomWorkspace(paths: string[], selectedLayoutPath: string | null) {
+  const { navigation, navigate } = useExplorerNavigation();
   const [state, setState] = useState<RoomListState>({ status: "loading" });
   const [query, setQuery] = useState("");
-  const [selectedLabel, setSelectedLabel] = useState<string | null>(null);
-  const [selectedVariantPath, setSelectedVariantPath] = useState<string | null>(null);
+  const selectedLabel = navigation.room;
+  const selectedVariantPath = navigation.variant;
 
   useEffect(() => {
     const controller = new AbortController();
     setState({ status: "loading" });
     setQuery("");
-    setSelectedLabel(null);
-    setSelectedVariantPath(null);
     loadLayoutRooms(paths, controller.signal)
       .then((data) => {
         if (!controller.signal.aborted) setState({ status: "ready", data });
@@ -49,20 +50,27 @@ export function useRoomWorkspace(paths: string[], selectedLayoutPath: string | n
     return [...byPath.values()].sort((left, right) => left.logicalPath.localeCompare(right.logicalPath));
   }, [data, room?.label]);
   const variant = variants.find((candidate) => candidate.logicalPath === selectedVariantPath) ?? variants[0] ?? null;
+  useEffect(() => {
+    if (!data || navigation.tab !== "rooms") return;
+    const roomLabel = room?.label ?? null;
+    const variantPath = variant?.logicalPath ?? null;
+    if (navigation.room !== roomLabel || navigation.variant !== variantPath) {
+      navigate({ room: roomLabel, variant: variantPath }, "replace");
+    }
+  }, [data, navigation.tab, navigation.room, navigation.variant, room?.label, variant?.logicalPath, navigate]);
   const warnings = [...new Set([...(data?.warnings ?? []), ...(data?.roomCatalogs.flatMap((catalog) => catalog.warnings) ?? [])])];
   const filteredRooms = data?.rooms.filter((candidate) => candidate.label.toLowerCase().includes(query.trim().toLowerCase())) ?? [];
   const occurrenceCount = room?.layouts.find((layout) => layout.logicalPath === selectedLayoutPath)?.nodeIndices.length ?? 0;
   const roomSets = [...new Set(data?.roomCatalogs.filter((catalog) => catalog.variants.some((candidate) => candidate.logicalPath === variant?.logicalPath)).flatMap((catalog) => catalog.roomSet ? [catalog.roomSet] : []) ?? [])];
 
   function selectRoom(label: string) {
-    setSelectedLabel(label);
-    setSelectedVariantPath(null);
+    navigate({ room: label });
   }
 
   return {
     state, data, room, variants, variant, warnings, filteredRooms,
     occurrenceCount, roomSets, query, setQuery, selectRoom,
-    selectVariant: setSelectedVariantPath, selectedLayoutPath,
+    selectVariant: (variant: string) => navigate({ variant }), selectedLayoutPath,
   };
 }
 
@@ -114,7 +122,7 @@ export function RoomPicker({ workspace }: { workspace: RoomWorkspace }) {
           </>
         )}
       </HoverPopover>
-      {warnings.length > 0 && <Badge title={warnings.join("\n")} variant="warning"><AlertTriangle className="mr-1 size-3" />{warnings.length} {warnings.length === 1 ? "warning" : "warnings"}</Badge>}
+      <WarningBadge label="Room warnings" warnings={warnings} />
     </div>
   );
 }
