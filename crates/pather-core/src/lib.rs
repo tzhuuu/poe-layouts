@@ -1027,7 +1027,18 @@ fn layout_graph_data_start(
     lines: &[&str],
 ) -> Result<usize, CampaignScrapeError> {
     if let Some(default_index) = lines.iter().position(|line| line.starts_with("Default%:")) {
-        return Ok(default_index + 1);
+        let start = default_index + 1;
+        if let Some(count) = lines.get(start).and_then(|line| line.parse::<usize>().ok()) {
+            // Some DGR files have a standalone preamble count; only zero is observed.
+            if count != 0 {
+                return Err(CampaignScrapeError::DgrParse {
+                    path: logical_path.to_owned(),
+                    message: format!("unsupported nonzero graph preamble count: {count}"),
+                });
+            }
+            return Ok(start + 1);
+        }
+        return Ok(start);
     }
 
     lines
@@ -1665,7 +1676,8 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), CampaignScrape
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
-    use std::path::PathBuf;
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     use pather_schema::{
         LayoutDatabaseModel, SourceFileModel, TerrainFileKind, TerrainFileModel, TerrainFileStatus,
@@ -1951,7 +1963,7 @@ Edges: 1
 "Metadata/Terrain/Act1/Area7Level1/GroundTypes/prison_floor.gt"
 ""
 Default%: 0 0 0
-60 174 1 1 "entranceout" R180 3 "default" "entrance1" "waypoint" 100 0 N
+60 174 1 0 "entranceout" R180 3 "default" "entrance1" "waypoint" 100 0 N
 258 14 1 0 "entranceup" R270 1 "entrance2" 100 0 N
 0 1 0 100 0 "Metadata/Terrain/Dungeon/rooms.et" 10 100 "" 0 0 0 P N 1
 "#;
@@ -1968,7 +1980,7 @@ Default%: 0 0 0
             Some("Metadata/Terrain/Act1/Area7Level1/master.tsi")
         );
         assert_eq!(graph.nodes.len(), 2);
-        assert_eq!(graph.nodes[0].links, vec![1]);
+        assert_eq!(graph.nodes[0].links, vec![0]);
         assert_eq!(graph.nodes[0].label.as_deref(), Some("entranceout"));
         assert_eq!(graph.nodes[0].rotation.as_deref(), Some("R180"));
         assert_eq!(graph.edges.len(), 1);
@@ -1990,7 +2002,7 @@ Edges: 1
 ""
 "Metadata/Terrain/Act1/Area1/GroundTypes/chris_sand_dune.gt"
 ""
-1668 75 1 1 "townentrance" I 2 "entrance1" "AutoWaypoint" 100 0 1 1
+1668 75 1 0 "townentrance" I 2 "entrance1" "AutoWaypoint" 100 0 1 1
 296 81 1 0 "washedup" R270 1 "default" 100 0 1 1
 1 0 0 100 1 "Metadata/Terrain/Beach/LargeCliffs/beach_large_cliff.et" 0 0
 "#;
@@ -2007,7 +2019,7 @@ Edges: 1
             Some("Metadata/Terrain/Act1/Area1/master.tsi")
         );
         assert_eq!(graph.nodes.len(), 2);
-        assert_eq!(graph.nodes[0].links, vec![1]);
+        assert_eq!(graph.nodes[0].links, vec![0]);
         assert_eq!(graph.nodes[0].label.as_deref(), Some("townentrance"));
         assert_eq!(graph.nodes[0].rotation.as_deref(), Some("I"));
         assert_eq!(graph.edges.len(), 1);
@@ -2017,5 +2029,112 @@ Edges: 1
             graph.edges[0].edge_tile.as_deref(),
             Some("Metadata/Terrain/Beach/LargeCliffs/beach_large_cliff.et")
         );
+    }
+
+    #[test]
+    #[ignore = "requires the local Acts 1-5 raw cache"]
+    fn validates_local_graph_corpus() {
+        fn visit(path: &Path, counts: &mut (usize, usize)) {
+            for entry in fs::read_dir(path).expect("read graph corpus") {
+                let path = entry.expect("read corpus entry").path();
+                if path.is_dir() {
+                    visit(&path, counts);
+                } else if path
+                    .extension()
+                    .is_some_and(|extension| extension == "tgr" || extension == "dgr")
+                {
+                    let graph = parse_dgr_layout_graph(
+                        &path.to_string_lossy(),
+                        &fs::read(&path).expect("read cached graph"),
+                    )
+                    .expect("parse cached graph");
+                    assert!(
+                        graph.warnings.is_empty(),
+                        "{}: {:?}",
+                        path.display(),
+                        graph.warnings
+                    );
+                    for node in &graph.nodes {
+                        let mut actual = node.links.clone();
+                        let mut expected = graph
+                            .edges
+                            .iter()
+                            .filter(|edge| edge.from == node.index || edge.to == node.index)
+                            .map(|edge| edge.index)
+                            .collect::<Vec<_>>();
+                        actual.sort_unstable();
+                        expected.sort_unstable();
+                        assert_eq!(actual, expected, "{}: node {}", path.display(), node.index);
+                    }
+                    if path.extension().is_some_and(|extension| extension == "tgr") {
+                        counts.0 += 1;
+                    } else {
+                        counts.1 += 1;
+                    }
+                }
+            }
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.poe-layouts/raw/campaign-acts-1-5/files/metadata");
+        let mut counts = (0, 0);
+        visit(&root, &mut counts);
+        eprintln!("Graph corpus: {} TGRs, {} DGRs", counts.0, counts.1);
+        assert!(counts.0 > 0 && counts.1 > 0);
+    }
+
+    #[test]
+    fn parse_dgr_layout_graph_skips_empty_preamble_without_shifting_indices() {
+        let text = r#"version 25
+Size: 9 9
+MasterFile: "Metadata/Terrain/Act1/Area4Level0/master.tsi"
+Nodes: 3
+Edges: 2
+""
+"Metadata/Terrain/Act1/Area4Level0/GroundTypes/cave_floor.gt"
+""
+Default%: 0 0 0
+0
+0 196 1 1 "entranceup" I 2 "default" "entrance1" 100 0 N 0
+196 12 1 0 "waterboss" FR270 1 "entrance2disabled" 100 0 N 0
+104 81 2 0 1 "" (any) 0 100 0 N 0
+2 1 0 100 0 0 "Metadata/Terrain/Dungeon/rooms.et" 20 100 0 "" 0 "" 20 0 P N 1
+0 2 0 100 0 0 "Metadata/Terrain/Dungeon/rooms.et" 20 100 0 "" 0 "" 20 0 P N 1
+"#;
+        let bytes = text
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let graph = parse_dgr_layout_graph("fixture.dgr", &bytes).expect("parse DGR preamble");
+        assert!(graph.warnings.is_empty());
+        assert_eq!(graph.nodes.len(), 3);
+        assert_eq!(graph.edges.len(), 2);
+        assert_eq!(graph.nodes[0].index, 0);
+        assert_eq!(graph.nodes[0].x, 0);
+        assert_eq!(graph.nodes[0].label.as_deref(), Some("entranceup"));
+        assert_eq!(graph.nodes[2].index, 2);
+        assert_eq!(graph.nodes[2].links, vec![0, 1]);
+        assert_eq!((graph.edges[1].from, graph.edges[1].to), (0, 2));
+        for node in &graph.nodes {
+            let mut actual = node.links.clone();
+            let mut expected = graph
+                .edges
+                .iter()
+                .filter(|edge| edge.from == node.index || edge.to == node.index)
+                .map(|edge| edge.index)
+                .collect::<Vec<_>>();
+            actual.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(actual, expected);
+        }
+        let unsupported = text.replacen("\n0\n", "\n1\n", 1);
+        let bytes = unsupported
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let error =
+            parse_dgr_layout_graph("unsupported.dgr", &bytes).expect_err("reject unknown preamble");
+        assert!(error
+            .to_string()
+            .contains("unsupported nonzero graph preamble count: 1"));
     }
 }

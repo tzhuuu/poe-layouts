@@ -86,7 +86,7 @@ rows followed by exactly `Edges` edge rows.
 Node rows look like:
 
 ```text
-<x> <y> <link-count> <linked-node-index...> "<label>" <rotation> <metadata...>
+<x> <y> <link-count> <incident-edge-index...> "<label>" <rotation> <metadata...>
 ```
 
 Useful observed node fields:
@@ -94,8 +94,10 @@ Useful observed node fields:
 - `x`, `y`: graph-space coordinates. They can be much larger than the `Size`
   values, so `Size` is probably tile/grid extent rather than the coordinate
   scale used by node rows.
-- `link-count` and following integers: adjacency list pointing at other node
-  row indices.
+- `link-count` and following integers: incident edge row indices, not neighboring
+  node indices. This is verified against all 178 cached TGRs; Coast node 3 has
+  links 24, 25, and 13 despite the graph having only 23 nodes. Derive neighboring
+  nodes from the referenced edges' endpoints.
 - `label`: empty for ordinary connector nodes, named for authored features
   such as `townentrance`, `washedup`, `tutorial`, `crossroad`, `waypoint`,
   `bridge`, `sidearea`, or `portal`.
@@ -123,6 +125,14 @@ but include a `Default%:` row before nodes and carry additional node/edge
 tokens, including trailing `N`/`V` node flags and `P`/`I` plus `N`/`V` edge
 flags. Treat `.tgr` as the simpler terrain graph template form for now, not as
 an entirely unrelated format.
+
+In 64 of the 362 cached DGRs, a standalone `0` follows `Default%:` before the
+first node. Its meaning is unresolved, but it is a preamble row, not a node.
+The parser skips this observed zero case and rejects an unknown nonzero
+preamble count. Counting it as a node shifts all subsequent node indices,
+misreads the last node as an edge, and omits the last real edge. Older DGRs
+without this row must still begin directly after `Default%:`. A real node
+whose X coordinate is zero has multiple tokens and is not skipped.
 
 Parser implication: a first parser can safely extract header fields, ground
 type slots, nodes with coordinates/links/labels/rotations, and edges with
