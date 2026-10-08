@@ -36,6 +36,7 @@ import { GraphNodeDetails } from "./GraphNodeDetails";
 import { ExplorerNavigationProvider, useExplorerNavigation } from "./ExplorerNavigation";
 import { isWorkspaceTab } from "../data/navigation";
 import { adjacentLayout, layoutKeyStep, type LayoutKeyRepeat } from "../data/layoutNavigation";
+import { graphOrientationDegrees, graphProjection, projectGraphPoint } from "../data/graphProjection";
 import { nodeCanvas, nodeRotationDegrees, rotateNodePoint, type NodeRotation, type RotationDirection } from "../data/nodeRotation";
 import { loadLayoutEnvironments, type LayoutEnvironment } from "../data/layoutEnvironment";
 import {
@@ -670,7 +671,7 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
   const [pickerNode, setPickerNode] = useState<number | null>(null);
   const nodeRotations = state.rotations;
   const canvas = nodeCanvas(graph.width, graph.height);
-  const view = useMemo(() => layoutGraphView(graph, nodeRotations, state.direction), [graph, nodeRotations, state.direction]);
+  const view = useMemo(() => layoutGraphView(graph, nodeRotations, state.direction, outdoor), [graph, nodeRotations, state.direction, outdoor]);
   const fitCamera = useMemo(() => cameraFromView(view), [view]);
   const [camera, setCamera] = useState<GraphCamera>(fitCamera);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -1006,7 +1007,7 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
                 y2={node.scaledY - view.visuals.nodeRingRadius}
                 stroke="#ffffff"
                 strokeWidth={view.visuals.ringStrokeWidth}
-                transform={`rotate(${nodeRotationDegrees(rotation, state.direction) - 45} ${node.scaledX} ${node.scaledY})`}
+                transform={`rotate(${graphOrientationDegrees(nodeRotationDegrees(rotation, state.direction), outdoor)} ${node.scaledX} ${node.scaledY})`}
               />}
               <text
                 fill={color}
@@ -1681,7 +1682,7 @@ type GraphPoint = {
   y: number;
 };
 
-function layoutGraphView(graph: LayoutGraph, rotations: Partial<Record<number, NodeRotation>>, direction: RotationDirection): LayoutGraphView {
+function layoutGraphView(graph: LayoutGraph, rotations: Partial<Record<number, NodeRotation>>, direction: RotationDirection, outdoor: boolean): LayoutGraphView {
   const canvas = nodeCanvas(graph.width, graph.height);
   const points = graph.nodes.map((node) => {
     const rotation = rotations[node.index];
@@ -1700,18 +1701,17 @@ function layoutGraphView(graph: LayoutGraph, rotations: Partial<Record<number, N
   const unrotatedHeight = (maxRawY - minRawY) * scale;
   const centerX = unrotatedWidth / 2;
   const centerY = unrotatedHeight / 2;
-  const rotation = -Math.PI / 4;
-  const cos = Math.cos(rotation);
-  const sin = Math.sin(rotation);
+  const projection = graphProjection(outdoor);
   const rotatedNodes = points.map((point) => {
     const x = (point.x - minRawX) * scale;
     const y = (point.y - minRawY) * scale;
     const dx = x - centerX;
     const dy = y - centerY;
+    const projected = projectGraphPoint({ x: dx, y: dy }, projection);
     return {
       node: point.node,
-      x: dx * cos - dy * sin + centerX,
-      y: dx * sin + dy * cos + centerY,
+      x: projected.x + centerX,
+      y: projected.y + centerY,
     };
   });
   const minRotatedX = Math.min(...rotatedNodes.map((node) => node.x), 0);
@@ -1726,9 +1726,11 @@ function layoutGraphView(graph: LayoutGraph, rotations: Partial<Record<number, N
   const yOffset = (height - rotatedHeight) / 2 - minRotatedY;
   const originX = -minRawX * scale - centerX;
   const originY = -minRawY * scale - centerY;
-  const translatedOriginX = originX * cos - originY * sin + centerX + xOffset;
-  const translatedOriginY = originX * sin + originY * cos + centerY + yOffset;
-  const coordinateTransform = `matrix(${scale * cos} ${scale * sin} ${-scale * sin} ${scale * cos} ${translatedOriginX} ${translatedOriginY})`;
+  const projectedOrigin = projectGraphPoint({ x: originX, y: originY }, projection);
+  const translatedOriginX = projectedOrigin.x + centerX + xOffset;
+  const translatedOriginY = projectedOrigin.y + centerY + yOffset;
+  const scaledProjection = graphProjection(outdoor, scale);
+  const coordinateTransform = `matrix(${scaledProjection.a} ${scaledProjection.b} ${scaledProjection.c} ${scaledProjection.d} ${translatedOriginX} ${translatedOriginY})`;
   const nodes = rotatedNodes.map(({ node, x, y }) => ({
     ...node,
     scaledX: x + xOffset,

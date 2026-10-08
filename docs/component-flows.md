@@ -271,7 +271,13 @@ Auto-fit includes the markers; parsed graph node and edge counts are unchanged.
 Outdoor graph previews default to a 24-unit grid overlay, toggleable in the
 graph toolbar. Classification comes from the selected graph's active RoomSet,
 not its suffix. The grid shares the graph's raw-coordinate transform, scale,
-origin, and 45-degree counterclockwise rotation. It moves and zooms with the
+origin, and 45-degree counterclockwise rotation. Outdoor previews invert raw Y
+before this rotation, matching the Coast shoreline/inland handedness and its
+southward variant in the reference maps. `graphProjection.ts` supplies the same
+linear transform to nodes, the grid matrix, and test-orientation markers.
+This is a display correction; stored coordinates and source rotation constraints
+are unchanged. Indoor and unknown previews retain the previous projection until
+their coordinate conventions are validated. The grid moves and zooms with the
 graph. This is a visual ruler over authored graph coordinates, not decoded
 terrain cells: node positions are not assumed to be exact multiples of 24,
 snapped, or replaced with fabricated grid nodes. Indoor and unknown layouts
