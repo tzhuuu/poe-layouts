@@ -178,15 +178,36 @@ once per label, even when several nodes use that label. The list is scoped to
 the selected zone's extracted, table-declared graph candidates. Failed files
 and parser warnings are surfaced in the list; the denominator counts graphs
 that parsed successfully. Counts describe template presence, not spawn odds.
-Room data lives in the Rooms tab beside Layouts and Files. Room search and
-selection persist across tab changes. Selecting a room or ARM variant does not
-highlight graph nodes or change the selected layout. The Layouts tab gives the
+Room data lives in the Rooms tab beside Layouts and Files.
+Explorer navigation is backed by URL query parameters: `zone`, `tab`
+(`layouts`, `rooms`, or `files`), `layout`, `room`, and `variant`. A scoped
+React provider reads the initial URL and restores it on browser Back/Forward.
+Explicit selections push history entries; data-backed defaults and unavailable
+selections replace the current entry. Zone changes clear dependent selections,
+and room changes clear the ARM variant. Unknown query parameters and fragments
+are preserved. Search text, graph camera, and temporary rotation overrides remain
+local UI state. Filtering the zone list does not change the selected workspace.
+Warning badges for layouts, rooms, environments, and missing terrain files use
+a shared hover/click panel with wrapped messages and a scrollable list.
+
+Room search and selection persist across tab changes. Selecting a room or ARM
+variant does not highlight graph nodes or change the selected layout. The Layouts tab gives the
 graph the full remaining workspace height. A separate layout picker beside the workspace
 tabs opens downward on hover or click. It highlights the current graph,
 scrolls long candidate lists, disables unavailable graphs, and closes after
 selection. It remains available in the Files tab. In the Rooms tab, the room
-selection/search picker replaces the layout picker on the same row. Shared
-workspace state preserves both selections when switching tabs.
+selection/search picker replaces the layout picker on the same row. Previous
+and next icon buttons step through distinct extracted graphs in picker order,
+skipping unavailable entries and disabling at either end. The canvas background
+can receive focus by click or Tab; Left/Right then changes the selected layout
+through URL navigation and retains canvas focus across graph reloads. Arrow keys
+in node controls, search fields, or other focused elements are unaffected.
+Individual key presses step immediately. Held keys have a 450 ms initial delay
+and are throttled to one step every 300 ms, without queued trailing steps.
+The repeat gate survives graph reloads and resets on key release, window blur,
+or a hidden document. A hold started elsewhere does not begin navigation when
+the canvas gains focus. Button clicks are not throttled.
+Shared workspace state preserves both selections when switching tabs.
 
 The Rooms workspace uses that searchable hover/click picker beside the tabs,
 with a large left preview and a scrollable right inspector below.
@@ -231,6 +252,11 @@ Node colors are presentation heuristics derived from labels and metadata tags:
 waypoint, side area, boss, exit, entrance, other named room, structural node,
 and trailing DGR `V` (void) flag. Disabled metadata tags do not assign a role.
 The graph preserves the raw label, rotation, and metadata in hover titles.
+Selection Metadata also shows the selected graph's format/version, declared
+`Size` pair, `Size * 24` test canvas, node/edge counts, distinct nonempty room
+labels, and master source. These are template properties, not measured final
+generated zone bounds; they come from the loaded graph in the shared workspace
+and remain visible without selecting a node.
 Rooms with boss labels or active boss metadata also get a small linked Boss
 marker, independently of their primary color role. The room catalog now also
 reads ARM spawn-hook rows with three finite numeric coordinates/rotation and
@@ -250,6 +276,33 @@ graph. This is a visual ruler over authored graph coordinates, not decoded
 terrain cells: node positions are not assumed to be exact multiples of 24,
 snapped, or replaced with fabricated grid nodes. Indoor and unknown layouts
 do not show the grid or its toggle.
+
+Clicking a graph node opens its rotation picker. I/R90/R180/R270 are local,
+per-node test overrides; source rotation metadata and cached files are unchanged.
+A white radial marker shows the chosen orientation relative to the default
+45-degree view. Selecting a rotation immediately applies the quarter-turn
+formulas to the node's raw coordinates around the full declared `Size * 24`
+canvas, not the node bounds. Counterclockwise quarter turns are the default
+test convention: R90 is `(y, W - x)` and R270 is `(H - y, x)`. The picker's
+CW/CCW selector changes the convention for all manual overrides in that layout;
+it does not assert how source rotation metadata affects generated terrain.
+Only that node and its connected edge endpoints move; all
+other raw coordinates stay unchanged. Missing Size disables rotation testing.
+Reset removes the override, and changing layouts discards all overrides.
+Pointer movement over four pixels pans the graph instead of opening a picker;
+Enter or Space opens a focused node. `npm test` in `app` checks the pure rotation
+formulas in both directions and the Tidal Island entrance example.
+
+The Layouts workspace scopes a React context/reducer store to the selected
+zone and graph path. `LayoutGraphPreview` publishes the parsed graph into the
+store; the renderer, rotation picker, and right-hand node details consume the
+same overrides and quarter-turn direction. Hover previews a node, leaving
+restores the clicked selection, and dismissing a picker does not clear that
+selection. Source/test rotations and raw/current canvas coordinates are shown
+in both the node tooltip and details, alongside connection, transition, and
+boss evidence. Changing layouts or zones clears transient graph state, and
+cancelled graph fetches cannot publish stale selections. Store tests cover
+hover fallback, independent overrides, invalid node IDs, and graph resets.
 
 ## Layout Environment Flow
 
