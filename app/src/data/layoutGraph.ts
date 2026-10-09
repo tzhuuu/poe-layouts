@@ -74,11 +74,12 @@ type RawLayoutGraphEdge = {
   metadata: string[];
 };
 
-export async function loadLayoutGraph(logicalPath: string, zoneId?: string): Promise<LayoutGraph> {
+export async function loadLayoutGraph(logicalPath: string, zoneId?: string, signal?: AbortSignal): Promise<LayoutGraph> {
   const params = new URLSearchParams({ path: logicalPath });
   if (zoneId) params.set("zone", zoneId);
   const response = await fetch(`/api/layout-graph?${params.toString()}`, {
     cache: "no-store",
+    signal,
   });
   if (!response.ok) {
     throw new Error(`Could not load layout graph (${response.status})`);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -8,6 +8,7 @@ import {
   ChevronRight,
   CheckCircle2,
   Database,
+  Eye,
   File,
   Folder,
   FolderTree,
@@ -20,7 +21,6 @@ import {
   Info,
   Map as MapIcon,
   Search,
-  TableProperties,
   Maximize2,
   ZoomIn,
   ZoomOut,
@@ -28,16 +28,16 @@ import {
 import { TerrainFileStatus } from "../generated/poe-layouts/terrain-file-status";
 import { TerrainFileKind } from "../generated/poe-layouts/terrain-file-kind";
 import { nodeBossDetails, nodeBossLabel, nodeHasBoss, nodeRole, nodeRoles } from "../data/nodeHighlights";
-import { RoomList, RoomPicker, useRoomWorkspace } from "./RoomList";
+import { RoomList, RoomSidebar, useRoomWorkspace } from "./RoomList";
 import { WarningBadge } from "./WarningBadge";
-import { NodeRotationPicker } from "./NodeRotationPicker";
 import { GraphWorkspaceProvider, useGraphWorkspace } from "./GraphWorkspace";
 import { GraphNodeDetails } from "./GraphNodeDetails";
 import { ExplorerNavigationProvider, useExplorerNavigation } from "./ExplorerNavigation";
 import { isWorkspaceTab } from "../data/navigation";
 import { adjacentLayout, layoutKeyStep, type LayoutKeyRepeat } from "../data/layoutNavigation";
-import { graphOrientationDegrees, graphProjection, projectGraphPoint } from "../data/graphProjection";
-import { nodeCanvas, nodeRotationDegrees, rotateNodePoint, type NodeRotation, type RotationDirection } from "../data/nodeRotation";
+import { graphProjection, projectGraphPoint } from "../data/graphProjection";
+import { graphPreviewReducer, initialGraphPreviewState } from "../data/graphPreviewState";
+import { nodeCanvas } from "../data/nodeRotation";
 import { loadLayoutEnvironments, type LayoutEnvironment } from "../data/layoutEnvironment";
 import { groupLayoutCandidates, loadLayoutCandidates, selectLayoutCandidate, type LayoutCandidate, type LayoutCandidates } from "../data/layoutCandidates";
 import {
@@ -158,6 +158,7 @@ function LayoutExplorer({
   onSelectZone,
 }: LayoutExplorerProps) {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [zonesExpanded, setZonesExpanded] = useState(false);
   const filteredZones = useMemo(
     () => filterZones(data.zones, query),
     [data.zones, query],
@@ -182,6 +183,7 @@ function LayoutExplorer({
         return;
       }
       event.preventDefault();
+      setZonesExpanded(true);
       searchInputRef.current?.focus();
       searchInputRef.current?.select();
     }
@@ -191,22 +193,26 @@ function LayoutExplorer({
   }, []);
 
   return (
-    <main className="grid h-screen min-h-[680px] min-w-[720px] grid-cols-[240px_minmax(0,1fr)] overflow-hidden bg-background text-foreground xl:grid-cols-[340px_minmax(0,1fr)]">
-      <aside className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-4 border-r bg-muted/30 p-4">
-        <header className="space-y-3">
+    <WorkspaceTabs
+      key={selectedZone?.id}
+      gameVersion={data.gameVersion}
+      selectedTerrain={selectedTerrain}
+      selectedZone={selectedZone}
+      sidebar={(
+        <>
+        <header className="shrink-0 space-y-2">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase text-muted-foreground">
-                PoE1 {data.scope}
-              </p>
-              <h1 className="mt-1 text-xl font-semibold tracking-tight">
+              <p className="text-[10px] font-semibold uppercase text-muted-foreground">PoE1</p>
+              <h1 className="mt-1 text-sm font-semibold">
                 Layout Explorer
               </h1>
             </div>
-            <Badge variant="outline">{data.gameVersion}</Badge>
+            <div className="flex shrink-0 items-start gap-2">
+              <Badge variant="outline">{data.gameVersion}</Badge>
+              <DebugStats stats={stats} zoneCount={data.zones.length} />
+            </div>
           </div>
-
-          <DebugStats stats={stats} zoneCount={data.zones.length} />
         </header>
 
         <ExplorerPane
@@ -216,12 +222,17 @@ function LayoutExplorer({
           searchInputRef={searchInputRef}
           selectedZone={selectedZone}
           onQueryChange={onQueryChange}
-          onSelectZone={onSelectZone}
+          expanded={zonesExpanded}
+          onExpandedChange={setZonesExpanded}
+          onSelectZone={(zone) => {
+            onSelectZone(zone);
+            setZonesExpanded(false);
+            onQueryChange("");
+          }}
         />
-      </aside>
-
-      <WorkspaceTabs key={selectedZone?.id} gameVersion={data.gameVersion} selectedTerrain={selectedTerrain} selectedZone={selectedZone} />
-    </main>
+        </>
+      )}
+    />
   );
 }
 
@@ -233,6 +244,8 @@ function ExplorerPane({
   selectedZone,
   onQueryChange,
   onSelectZone,
+  expanded,
+  onExpandedChange,
 }: {
   filteredZones: ZoneSummary[];
   layoutCountsByZoneId: Map<string, number>;
@@ -241,22 +254,37 @@ function ExplorerPane({
   selectedZone: ZoneSummary | null;
   onQueryChange: (query: string) => void;
   onSelectZone: (zoneId: string) => void;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
 }) {
+  const listId = useId();
   return (
-    <section className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3">
-      <label className="space-y-1.5">
-        <span className="flex items-center justify-between gap-3 text-xs font-medium text-muted-foreground">
-          Search
-          <kbd className="rounded border bg-background px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground">
-            {navigator.platform.toLowerCase().includes("mac") ? "Cmd" : "Ctrl"} K
-          </kbd>
+    <section aria-label="Zone selector" className="relative shrink-0 space-y-2 border-y py-3">
+      <button
+        aria-controls={listId}
+        aria-expanded={expanded}
+        aria-label={expanded ? "Collapse zones" : "Expand zones"}
+        className="flex w-full min-w-0 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => onExpandedChange(!expanded)}
+        title={selectedZone?.name ?? "Zones"}
+        type="button"
+      >
+        {selectedZone?.isTown ? <Home aria-hidden="true" className="size-4 shrink-0" /> : <MapIcon aria-hidden="true" className="size-4 shrink-0" />}
+        <span className="min-w-0 flex-1">
+          <span className="block text-[10px] font-semibold uppercase text-muted-foreground">Zones</span>
+          <span className="block truncate text-sm font-medium">{selectedZone?.name ?? "Choose zone"}</span>
         </span>
+        {expanded ? <ChevronDown aria-hidden="true" className="size-4 shrink-0" /> : <ChevronRight aria-hidden="true" className="size-4 shrink-0" />}
+      </button>
+      <label className="space-y-1.5">
+        <span className="sr-only">Search zones</span>
         <span className="relative block">
           <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             autoComplete="off"
-            className="pl-8"
+            className="h-8 pl-8"
             onChange={(event) => onQueryChange(event.target.value)}
+            onFocus={() => onExpandedChange(true)}
             placeholder="Zone, act, id"
             ref={searchInputRef}
             value={query}
@@ -264,7 +292,8 @@ function ExplorerPane({
         </span>
       </label>
 
-      <ScrollArea className="min-h-0 rounded-md border bg-card">
+      <div className="absolute inset-x-0 top-full z-20 border-b bg-background shadow-sm md:static md:border-b-0 md:bg-transparent md:shadow-none" hidden={!expanded} id={listId}>
+      <ScrollArea aria-label="Zones" className="h-[min(32dvh,240px)]">
         <div className="space-y-1 p-1.5">
           {filteredZones.map((zone) => (
             <button
@@ -291,8 +320,10 @@ function ExplorerPane({
               <Badge variant="secondary">Act {zone.act}</Badge>
             </button>
           ))}
+          {filteredZones.length === 0 && <p className="px-2 py-3 text-sm text-muted-foreground">No matching zones</p>}
         </div>
       </ScrollArea>
+      </div>
     </section>
   );
 }
@@ -301,10 +332,12 @@ function WorkspaceTabs({
   gameVersion,
   selectedTerrain,
   selectedZone,
+  sidebar,
 }: {
   gameVersion: string;
   selectedTerrain: TerrainFileSummary[];
   selectedZone: ZoneSummary | null;
+  sidebar: React.ReactNode;
 }) {
   const { navigation, navigate } = useExplorerNavigation();
   const [environments, setEnvironments] = useState<EnvironmentLoadState>({ status: "loading" });
@@ -361,7 +394,7 @@ function WorkspaceTabs({
     : resolvedLayouts.status === "error" ? [resolvedLayouts.message] : [];
   const selectedCandidate = selectLayoutCandidate(layoutCandidates, navigation.layout);
   const selectedLayoutPath = selectedCandidate?.logicalPath ?? null;
-  const setSelectedLayoutPath = (layout: string) => navigate({ layout });
+  const setSelectedLayoutPath = (layout: string) => navigate({ tab: "view", view: "layout", layout });
   const roomLayoutPaths = useMemo(
     () => layoutCandidates.map((candidate) => candidate.logicalPath),
     [layoutCandidates],
@@ -392,7 +425,7 @@ function WorkspaceTabs({
       canvasRegionRef.current?.focus({ preventScroll: true });
     }
   }, [selectedLayoutPath]);
-  const roomWorkspace = useRoomWorkspace(roomLayoutPaths, selectedLayoutPath);
+  const roomWorkspace = useRoomWorkspace(roomLayoutPaths, selectedLayoutPath, resolvedLayouts.status !== "loading");
   useEffect(() => {
     if (resolvedLayouts.status !== "loading" && navigation.zone === selectedZone?.id && navigation.layout !== selectedLayoutPath) {
       navigate({ layout: selectedLayoutPath }, "replace");
@@ -400,6 +433,23 @@ function WorkspaceTabs({
   }, [resolvedLayouts.status, navigation.zone, navigation.layout, selectedZone?.id, selectedLayoutPath, navigate]);
 
   return (
+    <main className="grid h-dvh min-h-[640px] grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-background text-foreground md:grid-cols-[260px_minmax(0,1fr)] md:grid-rows-1 xl:grid-cols-[280px_minmax(0,1fr)]">
+      <aside aria-label="Explorer sidebar" className="flex h-[32dvh] min-h-0 min-w-0 flex-col gap-3 border-b bg-muted/30 p-3 md:h-auto md:border-b-0 md:border-r">
+        {sidebar}
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto md:grid md:grid-rows-[minmax(0,1fr)_minmax(0,0.85fr)] md:overflow-hidden">
+        <LayoutSidebar
+          candidates={layoutCandidates}
+          loading={resolvedLayouts.status === "loading"}
+          onSelectLayout={setSelectedLayoutPath}
+          previousLayoutPath={previousLayoutPath}
+          nextLayoutPath={nextLayoutPath}
+          selectedLayoutPath={selectedLayoutPath}
+          active={navigation.tab === "view" && navigation.view === "layout"}
+          warnings={layoutWarnings}
+        />
+        <RoomSidebar workspace={roomWorkspace} />
+        </div>
+      </aside>
     <Tabs
       className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-3 p-4"
       value={activeTab}
@@ -410,30 +460,15 @@ function WorkspaceTabs({
         selectedZone={selectedZone}
         environments={environments}
         fallbackLayoutPath={selectedLayoutPath}
-        picker={activeTab === "rooms" ? (
-          <RoomPicker key={selectedZone?.id} workspace={roomWorkspace} />
-        ) : (
-          <div className="flex min-w-0 items-center gap-2">
-            <LayoutPicker
-              key={selectedZone?.id}
-              onSelectLayout={setSelectedLayoutPath}
-              previousLayoutPath={previousLayoutPath}
-              nextLayoutPath={nextLayoutPath}
-              selectedLayoutPath={selectedLayoutPath}
-              candidates={layoutCandidates}
-              loading={resolvedLayouts.status === "loading"}
-            />
-            <WarningBadge label="Layout resolution warnings" warnings={layoutWarnings}>{layoutWarnings.length} layout warnings</WarningBadge>
-          </div>
-        )}
       />
 
       <TabsContent
         className="grid min-h-0 min-w-0 overflow-hidden data-[state=inactive]:hidden"
-        value="layouts"
+        value="view"
       >
-        <GraphWorkspaceProvider key={`${selectedZone?.id}:${selectedLayoutPath}`}>
-        <section className="grid min-h-0 grid-cols-[minmax(0,1fr)_240px] gap-3 xl:grid-cols-[minmax(0,1fr)_320px]">
+        {navigation.view === "room" ? <RoomList workspace={roomWorkspace} /> : (
+        <GraphWorkspaceProvider>
+        <section className="grid min-h-0 grid-rows-[minmax(0,1fr)_140px] gap-3 lg:grid-cols-[minmax(0,1fr)_240px] lg:grid-rows-1 xl:grid-cols-[minmax(0,1fr)_320px]">
           <section
             aria-label="Layout canvas"
             className="relative min-h-0 overflow-hidden rounded-md border border-foreground/20 bg-[#101716] shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -466,18 +501,10 @@ function WorkspaceTabs({
             />}
           </section>
 
-          <ZoneInspector zone={selectedZone} candidate={selectedCandidate} />
+          <ZoneInspector zone={selectedZone} candidates={layoutCandidates} />
         </section>
         </GraphWorkspaceProvider>
-
-      </TabsContent>
-
-      <TabsContent
-        className="min-h-0 min-w-0 overflow-hidden data-[state=inactive]:hidden"
-        forceMount
-        value="rooms"
-      >
-        <RoomList workspace={roomWorkspace} />
+        )}
       </TabsContent>
 
       <TabsContent
@@ -487,6 +514,7 @@ function WorkspaceTabs({
         <FileBrowser terrainFiles={selectedTerrain} zone={selectedZone} />
       </TabsContent>
     </Tabs>
+    </main>
   );
 }
 
@@ -495,13 +523,11 @@ function WorkspaceHeader({
   selectedZone,
   environments,
   fallbackLayoutPath,
-  picker,
 }: {
   selectedTerrain: TerrainFileSummary[];
   selectedZone: ZoneSummary | null;
   environments: EnvironmentLoadState;
   fallbackLayoutPath: string | null;
-  picker: React.ReactNode;
 }) {
   const missing = selectedTerrain.filter(
     (file) => file.status === TerrainFileStatus.Missing,
@@ -518,7 +544,7 @@ function WorkspaceHeader({
 
   return (
     <header className="grid gap-3">
-      <div className="flex min-h-10 items-start justify-between gap-4">
+      <div className="flex min-h-10 flex-wrap items-start justify-between gap-x-4 gap-y-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
           <h2 className="max-w-full break-words text-2xl font-semibold tracking-tight">
             {selectedZone?.name ?? "No zone selected"}
@@ -531,20 +557,15 @@ function WorkspaceHeader({
 
       <div className="flex min-w-0 flex-wrap items-center gap-3">
         <TabsList className="w-fit shrink-0">
-          <TabsTrigger value="layouts">
-            <TableProperties />
-            Layouts
-          </TabsTrigger>
-          <TabsTrigger value="rooms">
-            <Layers />
-            Rooms
+          <TabsTrigger value="view">
+            <Eye />
+            View
           </TabsTrigger>
           <TabsTrigger value="files">
             <FolderTree />
             Files
           </TabsTrigger>
         </TabsList>
-        <div className="min-w-0 border-l pl-3">{picker}</div>
       </div>
     </header>
   );
@@ -623,39 +644,53 @@ function DebugStat({
 
 function LayoutGraphPreview({ logicalPath, outdoor, zoneId }: { logicalPath: string | null; outdoor: boolean; zoneId?: string }) {
   const { dispatch } = useGraphWorkspace();
-  const [loadState, setLoadState] = useState<
-    | { status: "idle" }
-    | { status: "loading" }
-    | { status: "ready"; graph: LayoutGraph }
-    | { status: "error"; message: string }
-  >({ status: "idle" });
+  const [loadState, updatePreview] = useReducer(graphPreviewReducer, undefined, initialGraphPreviewState);
+  const cachedGraphs = useRef(new Map<string, LayoutGraph>());
 
   useEffect(() => {
     if (!logicalPath) {
-      setLoadState({ status: "idle" });
+      updatePreview({ type: "clear" });
+      dispatch({ type: "clear" });
       return;
     }
-    let cancelled = false;
-    setLoadState({ status: "loading" });
-    loadLayoutGraph(logicalPath, zoneId)
+    const request = JSON.stringify([zoneId, logicalPath, outdoor]);
+    const cacheKey = JSON.stringify([zoneId, logicalPath]);
+    updatePreview({ type: "request", request });
+    const showGraph = (graph: LayoutGraph) => {
+      dispatch({ type: "load", graph });
+      updatePreview({ type: "ready", request, graph, outdoor });
+    };
+    const cached = cachedGraphs.current.get(cacheKey);
+    if (cached) {
+      cachedGraphs.current.delete(cacheKey);
+      cachedGraphs.current.set(cacheKey, cached);
+      showGraph(cached);
+      return;
+    }
+    const controller = new AbortController();
+    loadLayoutGraph(logicalPath, zoneId, controller.signal)
       .then((graph) => {
-        if (!cancelled) {
-          dispatch({ type: "load", graph });
-          setLoadState({ status: "ready", graph });
+        if (!controller.signal.aborted) {
+          cachedGraphs.current.set(cacheKey, graph);
+          if (cachedGraphs.current.size > 32) {
+            const oldest = cachedGraphs.current.keys().next().value;
+            if (oldest !== undefined) cachedGraphs.current.delete(oldest);
+          }
+          showGraph(graph);
         }
       })
       .catch((error: unknown) => {
-        if (!cancelled) {
-          setLoadState({
-            status: "error",
+        if (!controller.signal.aborted) {
+          updatePreview({
+            type: "error", request,
             message: error instanceof Error ? error.message : String(error),
           });
         }
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [logicalPath, zoneId, dispatch]);
+  }, [logicalPath, zoneId, outdoor, dispatch]);
 
   if (!logicalPath) {
     return (
@@ -665,39 +700,31 @@ function LayoutGraphPreview({ logicalPath, outdoor, zoneId }: { logicalPath: str
     );
   }
 
-  if (loadState.status === "loading") {
-    return (
-      <div className="grid h-full place-items-center p-6 text-sm text-white/70">
-        Loading DGR graph...
-      </div>
-    );
+  if (loadState.view) {
+    return <div aria-busy={loadState.request !== loadState.view.request && !loadState.error} className="relative h-full min-h-0">
+      <LayoutGraphSvg key={loadState.view.graph.logicalPath} graph={loadState.view.graph} outdoor={loadState.view.outdoor} />
+      {loadState.error && <div role="alert" className="absolute inset-x-3 bottom-8 rounded-md border border-amber-300/40 bg-amber-950/95 p-3 text-sm text-amber-100">{loadState.error}</div>}
+    </div>;
   }
 
-  if (loadState.status === "error") {
+  if (loadState.error) {
     return (
-      <div className="grid h-full place-items-center p-6">
+      <div role="alert" className="grid h-full place-items-center p-6">
         <div className="max-w-md rounded-md border border-amber-300/40 bg-amber-950/50 p-3 text-sm text-amber-100">
-          {loadState.message}
+          {loadState.error}
         </div>
       </div>
     );
   }
 
-  if (loadState.status !== "ready") {
-    return null;
-  }
-
-  return <LayoutGraphSvg graph={loadState.graph} outdoor={outdoor} />;
+  return <div role="status" className="grid h-full place-items-center p-6 text-sm text-white/70">Loading DGR graph...</div>;
 }
 
 function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boolean }) {
-  const { state, dispatch } = useGraphWorkspace();
+  const { dispatch } = useGraphWorkspace();
   const gridId = useId();
   const [gridVisible, setGridVisible] = useState(true);
-  const [pickerNode, setPickerNode] = useState<number | null>(null);
-  const nodeRotations = state.rotations;
-  const canvas = nodeCanvas(graph.width, graph.height);
-  const view = useMemo(() => layoutGraphView(graph, nodeRotations, state.direction, outdoor), [graph, nodeRotations, state.direction, outdoor]);
+  const view = useMemo(() => layoutGraphView(graph, outdoor), [graph, outdoor]);
   const fitCamera = useMemo(() => cameraFromView(view), [view]);
   const [camera, setCamera] = useState<GraphCamera>(fitCamera);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -771,7 +798,6 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
       if (event.type === "pointerup" && !drag.moved && drag.nodeIndex !== null) {
         const index = Number(drag.nodeIndex);
         dispatch({ type: "select", index });
-        setPickerNode(index);
       }
       dragRef.current = null;
     }
@@ -932,36 +958,18 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
             const color = nodeRoles[role].color;
             const labelLines = nodeLabelLines(node);
             const bossPosition = nodeHasBoss(node) ? bossMarkerPosition(node, view.visuals) : null;
-            const rotation = nodeRotations[node.index];
-            const point = canvas && rotation ? rotateNodePoint(node, canvas, rotation, state.direction) : node;
-            const direction = state.direction === "clockwise" ? "CW" : "CCW";
             return (
-            <NodeRotationPicker
-              key={node.index}
-              node={node}
-              canvas={canvas}
-              rotation={rotation}
-              direction={state.direction}
-              open={pickerNode === node.index}
-              onOpenChange={(open) => {
-                if (open) dispatch({ type: "select", index: node.index });
-                setPickerNode((current) => open ? node.index : current === node.index ? null : current);
-              }}
-              onRotationChange={(rotation) => dispatch({ type: "rotate", index: node.index, rotation })}
-              onDirectionChange={(direction) => dispatch({ type: "direction", direction })}
-            >
             <g
+              key={node.index}
               aria-label={`Node ${node.index}${node.label ? ` ${node.label}` : ""}`}
               className="cursor-pointer outline-none focus-visible:[&>circle]:stroke-white"
               data-node-index={node.index}
-              data-test-rotation={rotation}
               data-room-label={node.label ?? ""}
               data-node-role={role}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
                   dispatch({ type: "select", index: node.index });
-                  setPickerNode(node.index);
                 }
               }}
               onPointerEnter={() => {
@@ -1023,18 +1031,6 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
                 strokeDasharray={role === "void" ? "4 4" : undefined}
                 strokeWidth={view.visuals.ringStrokeWidth}
               />
-              {rotation && <line
-                aria-hidden="true"
-                data-orientation-marker="true"
-                pointerEvents="none"
-                x1={node.scaledX}
-                y1={node.scaledY}
-                x2={node.scaledX}
-                y2={node.scaledY - view.visuals.nodeRingRadius}
-                stroke="#ffffff"
-                strokeWidth={view.visuals.ringStrokeWidth}
-                transform={`rotate(${graphOrientationDegrees(nodeRotationDegrees(rotation, state.direction), outdoor)} ${node.scaledX} ${node.scaledY})`}
-              />}
               <text
                 fill={color}
                 fontSize={view.visuals.indexFontSize}
@@ -1060,12 +1056,10 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
               <title>
                 node {node.index}
                 {node.label ? ` ${node.label}` : ""}
-                {`\n${nodeRoles[role].label}\nSource rotation: ${node.rotation ?? "any"}\nRaw position: ${node.x}, ${node.y}\nCurrent position: ${point.x}, ${point.y}\nMetadata: ${node.metadata.join(" ")}`}
-                {rotation ? `\nTest rotation: ${rotation} ${direction}` : ""}
+                {`\n${nodeRoles[role].label}\nSource rotation: ${node.rotation ?? "any"}\nPosition: ${node.x}, ${node.y}\nMetadata: ${node.metadata.join(" ")}`}
                 {nodeTransitionDetails(node)}
               </title>
             </g>
-            </NodeRotationPicker>
             );
           })}
         </svg>
@@ -1081,13 +1075,14 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
 
 function ZoneInspector({
   zone,
-  candidate,
+  candidates,
 }: {
   zone: ZoneSummary | null;
-  candidate: LayoutCandidate | null;
+  candidates: LayoutCandidate[];
 }) {
   const { state } = useGraphWorkspace();
   const graph = state.graph;
+  const candidate = candidates.find((item) => item.logicalPath === graph?.logicalPath) ?? null;
   const canvas = graph ? nodeCanvas(graph.width, graph.height) : null;
   const namedRooms = new Set(graph?.nodes.flatMap((node) => node.label ? [node.label] : [])).size;
   if (!zone) {
@@ -1116,7 +1111,6 @@ function ZoneInspector({
           <dl className="space-y-2 text-sm">
             <DetailRow label="ID" value={zone.id} />
             <DetailRow label="Area Level" value={zone.areaLevel} />
-            <DetailRow label="Topology Rows" value={zone.topologyIndices.length} />
           </dl>
 
           <Separator />
@@ -1136,8 +1130,8 @@ function ZoneInspector({
                   <div title="Declared Size header from the selected layout file; not confirmed final generated zone bounds.">
                     <DetailRow label="Layout size" value={graph.width !== null && graph.height !== null ? `${graph.width} x ${graph.height}` : "Not declared"} />
                   </div>
-                  <div title="Declared Size multiplied by 24, used for the viewer's rotation tests.">
-                    <DetailRow label="Test canvas" value={canvas ? `${canvas.width} x ${canvas.height} units` : "Unavailable"} />
+                  <div title="Declared Size multiplied by 24; not confirmed final generated zone bounds.">
+                    <DetailRow label="Canvas size" value={canvas ? `${canvas.width} x ${canvas.height} units` : "Unavailable"} />
                   </div>
                   <DetailRow label="Nodes" value={graph.nodes.length} />
                   <DetailRow label="Edges" value={graph.edges.length} />
@@ -1197,13 +1191,15 @@ function EnvironmentBadge({ layout, unavailableReason }: {
   );
 }
 
-function LayoutPicker({
+function LayoutSidebar({
   onSelectLayout,
   selectedLayoutPath,
   candidates,
   loading,
   previousLayoutPath,
   nextLayoutPath,
+  warnings,
+  active,
 }: {
   onSelectLayout: (logicalPath: string) => void;
   selectedLayoutPath: string | null;
@@ -1211,34 +1207,23 @@ function LayoutPicker({
   loading: boolean;
   previousLayoutPath: string | null;
   nextLayoutPath: string | null;
+  warnings: string[];
+  active: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectedButtonRef = useRef<HTMLButtonElement | null>(null);
   const groups = groupLayoutCandidates(candidates);
-  const selectedCandidate = candidates.find((candidate) => candidate.logicalPath === selectedLayoutPath);
-
-  function cancelClose() {
-    if (closeTimer.current !== null) clearTimeout(closeTimer.current);
-    closeTimer.current = null;
-  }
-
-  function openOnHover(event: React.PointerEvent) {
-    cancelClose();
-    if (event.pointerType === "mouse") setOpen(true);
-  }
-
-  function closeOnLeave(event: React.PointerEvent) {
-    if (event.pointerType !== "mouse") return;
-    cancelClose();
-    closeTimer.current = setTimeout(() => setOpen(false), 180);
-  }
-
-  useEffect(() => () => {
-    if (closeTimer.current !== null) clearTimeout(closeTimer.current);
-  }, []);
+  useEffect(() => {
+    selectedButtonRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedLayoutPath]);
 
   return (
-    <div className="flex min-w-0 items-center gap-1">
+    <section aria-label="Layouts sidebar" className="flex min-h-0 min-w-0 flex-none flex-col gap-2 md:flex-1">
+      <header className="flex shrink-0 items-center justify-between gap-2">
+        <h2 className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+          <GitBranch aria-hidden="true" className="size-4 shrink-0" />
+          Layouts <span className="text-xs font-normal text-muted-foreground">{loading ? "..." : candidates.length}</span>
+        </h2>
+        <div className="flex shrink-0 items-center gap-1">
       <Button
         aria-label="Previous layout"
         disabled={previousLayoutPath === null}
@@ -1247,71 +1232,6 @@ function LayoutPicker({
         title="Previous layout"
         variant="outline"
       ><ArrowLeft aria-hidden="true" /></Button>
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          aria-label="Choose layout"
-          className="max-w-full gap-2 px-3"
-          disabled={loading || candidates.length === 0}
-          onClick={(event) => {
-            if (open && event.detail > 0) event.preventDefault();
-          }}
-          onPointerEnter={openOnHover}
-          onPointerLeave={closeOnLeave}
-          title={selectedLayoutPath ?? "No layouts available"}
-          variant="outline"
-        >
-          <GitBranch aria-hidden="true" />
-          <span>{loading ? "Loading layouts" : layoutCountLabel(candidates.length)}</span>
-          {selectedLayoutPath && <span className="hidden max-w-[200px] truncate font-mono text-xs text-muted-foreground xl:block">{selectedCandidate?.group.length ? `${selectedCandidate.group.join(" / ")}: ` : ""}{baseName(selectedLayoutPath)}</span>}
-          <ChevronDown aria-hidden="true" className={open ? "rotate-180" : ""} />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        aria-label="Choose layout"
-        className="w-[min(480px,calc(100vw-32px))] overflow-hidden p-0"
-        onOpenAutoFocus={(event) => event.preventDefault()}
-        onPointerEnter={cancelClose}
-        onPointerLeave={closeOnLeave}
-      >
-        <header className="border-b px-3 py-2 text-sm font-semibold">Possible layouts</header>
-        <div className="max-h-[min(400px,60vh)] overflow-y-auto p-1">
-          {groups.map((group) => <section aria-label={group.label || "Layouts"} key={group.label}>
-          {(group.label || groups.length > 1) && <h3 className="sticky top-0 z-10 border-b bg-popover px-2 py-2 text-xs font-semibold">{group.label || "Layouts"} <span className="font-normal text-muted-foreground">{group.candidates.length}</span></h3>}
-          {group.candidates.map((file) => (
-            <button
-              aria-current={file.logicalPath === selectedLayoutPath ? "true" : undefined}
-              className={[
-                "grid w-full grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-2 rounded-sm px-2 py-2.5 text-left text-sm outline-none transition-colors",
-                "hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
-                file.logicalPath === selectedLayoutPath
-                  ? "bg-accent/80 shadow-[inset_3px_0_0_hsl(var(--primary))]"
-                  : "",
-              ].join(" ")}
-              key={file.logicalPath}
-              onClick={() => {
-                onSelectLayout(file.logicalPath);
-                cancelClose();
-                setOpen(false);
-              }}
-              title={[file.logicalPath, ...file.rootPaths.filter((path) => path !== file.logicalPath).map((path) => `Source: ${path}`)].join("\n")}
-              type="button"
-            >
-              {file.logicalPath === selectedLayoutPath ? <CheckCircle2 aria-hidden="true" className="size-4 text-primary" /> : <span />}
-              <span className="min-w-0">
-                <span className="block truncate font-mono text-xs font-medium">{baseName(file.logicalPath)}</span>
-                <span className="block truncate text-[10px] text-muted-foreground">{file.logicalPath}</span>
-              </span>
-              <span className="justify-self-end">
-                <StatusBadge status={TerrainFileStatus.Extracted} />
-              </span>
-            </button>
-          ))}
-          </section>)}
-        </div>
-      </PopoverContent>
-    </Popover>
       <Button
         aria-label="Next layout"
         disabled={nextLayoutPath === null}
@@ -1320,7 +1240,40 @@ function LayoutPicker({
         title="Next layout"
         variant="outline"
       ><ArrowRight aria-hidden="true" /></Button>
-    </div>
+        </div>
+      </header>
+      <WarningBadge label="Layout resolution warnings" warnings={warnings}>{warnings.length} layout warnings</WarningBadge>
+      <ScrollArea aria-label="Layout choices" className="h-44 min-h-0 flex-none md:h-auto md:flex-1">
+        <div className="space-y-3 pr-2">
+          {loading && <p className="py-3 text-sm text-muted-foreground" role="status">Loading layouts</p>}
+          {!loading && candidates.length === 0 && <p className="py-3 text-sm text-muted-foreground">No layouts available</p>}
+          {groups.map((group) => <section aria-label={group.label || "Layouts"} key={group.label}>
+          {(group.label || groups.length > 1) && <h3 className="flex items-center justify-between border-b px-2 py-2 text-xs font-semibold"><span className="min-w-0 truncate" title={group.label}>{group.label || "Layouts"}</span><span className="pl-2 font-normal text-muted-foreground">{group.candidates.length}</span></h3>}
+          {group.candidates.map((file) => (
+            <button
+              aria-label={`Select layout ${baseName(file.logicalPath)}`}
+              aria-current={active && file.logicalPath === selectedLayoutPath ? "true" : undefined}
+              className={[
+                "grid h-9 w-full grid-cols-[16px_minmax(0,1fr)] items-center gap-2 rounded-sm px-2 text-left outline-none transition-colors",
+                "hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
+                active && file.logicalPath === selectedLayoutPath
+                  ? "bg-accent/80 shadow-[inset_3px_0_0_hsl(var(--primary))]"
+                  : "",
+              ].join(" ")}
+              key={file.logicalPath}
+              onClick={() => onSelectLayout(file.logicalPath)}
+              ref={file.logicalPath === selectedLayoutPath ? selectedButtonRef : undefined}
+              title={[file.logicalPath, ...file.rootPaths.filter((path) => path !== file.logicalPath).map((path) => `Source: ${path}`)].join("\n")}
+              type="button"
+            >
+              {active && file.logicalPath === selectedLayoutPath ? <CheckCircle2 aria-hidden="true" className="size-4 text-primary" /> : <span />}
+              <span className="truncate font-mono text-xs font-medium">{baseName(file.logicalPath)}</span>
+            </button>
+          ))}
+          </section>)}
+        </div>
+      </ScrollArea>
+    </section>
   );
 }
 
@@ -1408,7 +1361,7 @@ function FileBrowser({
   );
 
   return (
-    <section className="grid h-full min-h-0 grid-cols-[340px_minmax(0,1fr)]">
+    <section className="grid h-full min-h-0 min-w-0 grid-rows-[140px_minmax(0,1fr)] lg:grid-cols-[340px_minmax(0,1fr)] lg:grid-rows-1">
       <aside className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] border-r">
         <header className="border-b px-3 py-2">
           <h3 className="text-sm font-semibold">Raw Files</h3>
@@ -1716,13 +1669,8 @@ type GraphPoint = {
   y: number;
 };
 
-function layoutGraphView(graph: LayoutGraph, rotations: Partial<Record<number, NodeRotation>>, direction: RotationDirection, outdoor: boolean): LayoutGraphView {
-  const canvas = nodeCanvas(graph.width, graph.height);
-  const points = graph.nodes.map((node) => {
-    const rotation = rotations[node.index];
-    const point = canvas && rotation ? rotateNodePoint(node, canvas, rotation, direction) : node;
-    return { node, x: point.x, y: point.y };
-  });
+function layoutGraphView(graph: LayoutGraph, outdoor: boolean): LayoutGraphView {
+  const points = graph.nodes.map((node) => ({ node, x: node.x, y: node.y }));
   const xValues = points.map((point) => point.x);
   const yValues = points.map((point) => point.y);
   const minRawX = Math.min(...xValues, 0);
@@ -1934,10 +1882,6 @@ function layoutCountsByZone(data: LayoutData): Map<string, number> {
   return new Map(
     data.zones.map((zone) => [zone.id, terrainFilesForZone(data, zone).length]),
   );
-}
-
-function layoutCountLabel(count: number): string {
-  return `${count} ${count === 1 ? "layout" : "layouts"}`;
 }
 
 function initialRawFilePrefix(

@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import { inspectedGraphNode } from "../data/graphWorkspaceState";
-import { nodeCanvas, rotateNodePoint } from "../data/nodeRotation";
+import { nodeCanvas } from "../data/nodeRotation";
 import { nodeBossDetails, nodeHasBoss, nodeRole, nodeRoles } from "../data/nodeHighlights";
 import { useGraphWorkspace } from "./GraphWorkspace";
 import { Badge } from "./ui/badge";
@@ -11,11 +11,8 @@ export function GraphNodeDetails() {
   const node = inspectedGraphNode(state);
   if (!node || !state.graph) return <section aria-label="Node details" className="text-xs text-muted-foreground">No node selected</section>;
   const canvas = nodeCanvas(state.graph.width, state.graph.height);
-  const rotation = state.rotations[node.index];
-  const point = canvas && rotation ? rotateNodePoint(node, canvas, rotation, state.direction) : node;
   const neighbors = [...new Set(state.graph.edges.flatMap((edge) => edge.from === node.index ? [edge.to] : edge.to === node.index ? [edge.from] : []))];
   const mode = state.selectedNodeIndex === node.index ? "Selected" : "Hovered";
-  const direction = state.direction === "clockwise" ? "CW" : "CCW";
   return (
     <section aria-label="Node details" className="space-y-3" data-inspected-node={node.index} data-inspection-mode={mode}>
       <header className="flex items-center justify-between gap-2">
@@ -29,9 +26,7 @@ export function GraphNodeDetails() {
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs [&>dt]:text-muted-foreground [&>dd]:min-w-0 [&>dd]:break-words [&>dd]:text-right">
         <dt>Role</dt><dd>{nodeRoles[nodeRole(node)].label}</dd>
         <dt>Source rotation</dt><dd className="font-mono">{node.rotation ?? "any"}</dd>
-        <dt>Test rotation</dt><dd className="font-mono">{rotation ? `${rotation} ${direction}` : "None"}</dd>
-        <dt>Raw position</dt><dd className="font-mono">{node.x}, {node.y}</dd>
-        <dt>Current position</dt><dd className="font-mono">{point.x}, {point.y}</dd>
+        <dt>Position</dt><dd className="font-mono">{node.x}, {node.y}</dd>
         <dt>Canvas</dt><dd className="font-mono">{canvas ? `${canvas.width} x ${canvas.height}` : "Size unavailable"}</dd>
         <dt>Connected nodes</dt><dd>{neighbors.length ? neighbors.join(", ") : "None"}</dd>
       </dl>

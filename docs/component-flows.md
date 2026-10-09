@@ -84,8 +84,13 @@ available. Discovery never lists arbitrary nearby cached graphs. Shared child
 paths are deduplicated while retaining their top-level source roots. Recursion
 is bounded, and file-group paths resolve relative to the declared FGP file.
 
-The picker groups child variants by source alias (for example Prison/Warden or
-Level1/Level2), without a separate subgraph control. Existing wrapper URLs map
+The left sidebar groups child variants by source alias (for example Prison/Warden
+or Level1/Level2), without a separate subgraph control. Zone/act/id browsing is
+collapsed by default above it, expands on zone search (or Cmd/Ctrl+K), and closes
+after selection. Zone and layout lists scroll independently; layout selection,
+arrow navigation and the active Rooms/Files view remain in the same workspace.
+Collapsing the zone list does not reload the graph or clear its client state.
+Existing wrapper URLs map
 to their first reachable candidate; explicit child URLs survive loading and
 reload. API failure falls back to original topology choices with a warning.
 These are individual section graph choices, not asserted whole-zone
@@ -186,14 +191,14 @@ browser or AI helper
 browser app
   -> /api/layout-graph?path=metadata/terrain/act1/area1/graphs/example.dgr
   -> pather-core DGR parser
-  -> node/edge graph JSON rendered in the Layouts tab
+  -> node/edge graph JSON rendered in View
 
 browser app
   -> POST /api/layout-rooms { paths: extracted graph candidates for the selected zone }
   -> server reads and parses each distinct DGR/TGR path
   -> pather-core summarize_layout_rooms
   -> room-label list with distinct-layout counts and node indices per layout
-  -> searchable room picker, selected ARM variant, and room details workspace
+  -> searchable sidebar room list, selected ARM variant, and room details workspace
 ```
 
 The app reads the compiled FlatBuffers artifact directly. Local scrape, cache,
@@ -207,26 +212,33 @@ once per label, even when several nodes use that label. The list is scoped to
 the selected zone's extracted, table-declared graph candidates. Failed files
 and parser warnings are surfaced in the list; the denominator counts graphs
 that parsed successfully. Counts describe template presence, not spawn odds.
-Room data lives in the Rooms tab beside Layouts and Files.
+The workspace has View and Files tabs. View renders either the selected layout
+graph or room, chosen by clicking the corresponding sidebar entry. A searchable Rooms
+section below the sidebar layout list shares that catalog and shows each room's
+distinct-layout count against the parsed-layout total. Selecting a sidebar room
+opens the room renderer in View and updates the URL while retaining the selected layout.
+Layout and room choices scroll independently, and the selected room is highlighted
+while its viewer is active.
 Explorer navigation is backed by URL query parameters: `zone`, `tab`
-(`layouts`, `rooms`, or `files`), `layout`, `room`, and `variant`. A scoped
+(`view` or `files`), `view` (`layout` or `room`), `layout`, `room`, and `variant`. Legacy
+`tab=layouts` and `tab=rooms` links map to the corresponding renderer. A scoped
 React provider reads the initial URL and restores it on browser Back/Forward.
 Explicit selections push history entries; data-backed defaults and unavailable
-selections replace the current entry. Zone changes clear dependent selections,
+selections replace the current entry. Room loading waits for layout resolution
+before validating saved selections, so a transient empty candidate list cannot
+overwrite a room deep link. Zone changes clear dependent selections,
 and room changes clear the ARM variant. Unknown query parameters and fragments
-are preserved. Search text, graph camera, and temporary rotation overrides remain
+are preserved. Search text and graph camera remain
 local UI state. Filtering the zone list does not change the selected workspace.
 Warning badges for layouts, rooms, environments, and missing terrain files use
 a shared hover/click panel with wrapped messages and a scrollable list.
 
 Room search and selection persist across tab changes. Selecting a room or ARM
-variant does not highlight graph nodes or change the selected layout. The Layouts tab gives the
-graph the full remaining workspace height. A separate layout picker beside the workspace
-tabs opens downward on hover or click. It highlights the current graph,
-scrolls long candidate lists, disables unavailable graphs, and closes after
-selection. It remains available in the Files tab. In the Rooms tab, the room
-selection/search picker replaces the layout picker on the same row. Previous
-and next icon buttons step through distinct extracted graphs in picker order,
+variant does not highlight graph nodes or change the selected layout. The View tab gives the
+active renderer the full remaining workspace height. Layout and room lists remain
+in the sidebar even while Files is open; clicking either returns to View.
+Returning from Files through the View tab restores the previous renderer.
+Previous and next icon buttons step through distinct extracted graphs in sidebar order,
 skipping unavailable entries and disabling at either end. The canvas background
 can receive focus by click or Tab; Left/Right then changes the selected layout
 through URL navigation and retains canvas focus across graph reloads. Arrow keys
@@ -238,8 +250,8 @@ or a hidden document. A hold started elsewhere does not begin navigation when
 the canvas gains focus. Button clicks are not throttled.
 Shared workspace state preserves both selections when switching tabs.
 
-The Rooms workspace uses that searchable hover/click picker beside the tabs,
-with a large left preview and a scrollable right inspector below.
+The room renderer uses the searchable sidebar list, with a large left preview
+and a scrollable right inspector.
 `POST /api/layout-rooms` also calls
 `pather-core inspect_layout_rooms` for the layouts' distinct master sources:
 graph MasterFile -> TSI RoomSet -> active, deduplicated ARM references -> ARM
@@ -270,6 +282,22 @@ distinct ring. Grid, objects, and markers have independent visibility toggles.
 The viewport fits on load/resize, supports pointer dragging and cursor-centered
 wheel zoom, and has zoom/fit buttons. Marker glyphs remain screen-sized.
 Room state handles loading, missing variants, and parse failures explicitly.
+Hovering or focusing a room marker, object, or tile publishes its parsed metadata
+to the top of the room inspector. Marker tags, kinds, positions and rotation,
+object entity/art paths, and tile dimensions, origin, elevation and asset indices
+are shown without guessing additional format semantics. Leaving or blurring an
+item clears the inspection; changing rooms/variants, hiding a marker/object layer,
+or beginning a pan also clears it. Inspection is local state, not URL navigation.
+A compact top-left canvas readout shows the inspected item kind/index, label or
+art filename, raw position and marker rotation. It ignores pointer events and
+moves below the toolbar in narrow canvases; the full inspector remains available.
+Objects use 12-pixel squares with 20-pixel hit targets, and marker diamonds use
+24-pixel circular hit targets; these remain screen-sized when zooming. Hover or
+focus highlights the inspected item and gently pulses matching peers. Objects
+match normalized art/entity pairs, markers match kind/tag, and tiles match their
+complete key metadata excluding position. Unknown objects without art/entity do
+not group. Reduced-motion preferences keep peer highlights steady. Highlight
+overlays do not intercept pointers or change the stable hit targets.
 This is a data-backed plan, not textured in-game geometry; mesh/texture assets,
 decals, and terrain assembly are not decoded yet.
 
@@ -282,7 +310,7 @@ waypoint, side area, boss, exit, entrance, other named room, structural node,
 and trailing DGR `V` (void) flag. Disabled metadata tags do not assign a role.
 The graph preserves the raw label, rotation, and metadata in hover titles.
 Selection Metadata also shows the selected graph's format/version, declared
-`Size` pair, `Size * 24` test canvas, node/edge counts, distinct nonempty room
+`Size` pair, `Size * 24` canvas size, node/edge counts, distinct nonempty room
 labels, and master source. These are template properties, not measured final
 generated zone bounds; they come from the loaded graph in the shared workspace
 and remain visible without selecting a node.
@@ -315,32 +343,28 @@ terrain cells: node positions are not assumed to be exact multiples of 24,
 snapped, or replaced with fabricated grid nodes. Indoor and unknown layouts
 do not show the grid or its toggle.
 
-Clicking a graph node opens its rotation picker. I/R90/R180/R270 are local,
-per-node test overrides; source rotation metadata and cached files are unchanged.
-A white radial marker shows the chosen orientation relative to the default
-45-degree view. Selecting a rotation immediately applies the quarter-turn
-formulas to the node's raw coordinates around the full declared `Size * 24`
-canvas, not the node bounds. Counterclockwise quarter turns are the default
-test convention: R90 is `(y, W - x)` and R270 is `(H - y, x)`. The picker's
-CW/CCW selector changes the convention for all manual overrides in that layout;
-it does not assert how source rotation metadata affects generated terrain.
-Only that node and its connected edge endpoints move; all
-other raw coordinates stay unchanged. Missing Size disables rotation testing.
-Reset removes the override, and changing layouts discards all overrides.
-Pointer movement over four pixels pans the graph instead of opening a picker;
-Enter or Space opens a focused node. `npm test` in `app` checks the pure rotation
-formulas in both directions and the Tidal Island entrance example.
+Clicking a graph node selects it for inspection without changing its coordinates
+or source rotation constraints. Pointer movement over four pixels pans the graph
+instead of selecting a node; Enter or Space selects a focused node. The manual
+per-node rotation experiment and its picker have been removed. Pure rotation
+formula tests remain as format-investigation coverage, not live viewer controls.
 
-The Layouts workspace scopes a React context/reducer store to the selected
-zone and graph path. `LayoutGraphPreview` publishes the parsed graph into the
-store; the renderer, rotation picker, and right-hand node details consume the
-same overrides and quarter-turn direction. Hover previews a node, leaving
-restores the clicked selection, and dismissing a picker does not clear that
-selection. Source/test rotations and raw/current canvas coordinates are shown
-in both the node tooltip and details, alongside connection, transition, and
-boss evidence. Changing layouts or zones clears transient graph state, and
+The layout renderer scopes a React context/reducer store to the selected
+zone. `LayoutGraphPreview` keeps the current graph, projection and inspector
+visible while another layout loads, then publishes the replacement in one update.
+The SVG remounts only when a replacement arrives, so its initial camera is fitted
+without briefly painting the previous camera. Up to 32 recently viewed graphs
+are cached by zone/path while the preview stays mounted; failed requests are not
+cached. Superseded requests are aborted and cannot replace newer selections.
+Initial loads may show a loading state; later failures retain the graph and show
+an error overlay. `LayoutGraphPreview` publishes the parsed graph into the
+store; the renderer and right-hand node details share hover and selection state.
+Hover previews a node, and leaving restores the clicked selection. Source
+rotations and positions are shown in both the node tooltip and details,
+alongside connection, transition, and
+boss evidence. Committing a replacement graph or changing zones clears transient graph state, and
 cancelled graph fetches cannot publish stale selections. Store tests cover
-hover fallback, independent overrides, invalid node IDs, and graph resets.
+hover fallback, source-data preservation, invalid node IDs, and graph resets.
 
 ## Reference Comparison Flow
 

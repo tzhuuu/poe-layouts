@@ -27,34 +27,34 @@ test("unselected hover clears on leave and stale leave events do not clear a new
   assert.equal(inspectedGraphNode(state), null);
 });
 
-test("selection is independent of rotation overrides and directions", () => {
+test("selection preserves source rotation and position", () => {
   let state = graphWorkspaceReducer(loaded(), { type: "select", index: 0 });
-  state = graphWorkspaceReducer(state, { type: "rotate", index: 0, rotation: "R90" });
-  state = graphWorkspaceReducer(state, { type: "rotate", index: 7, rotation: "R270" });
-  state = graphWorkspaceReducer(state, { type: "direction", direction: "clockwise" });
   assert.equal(inspectedGraphNode(state), graph.nodes[0]);
-  assert.deepEqual(state.rotations, { 0: "R90", 7: "R270" });
-  state = graphWorkspaceReducer(state, { type: "rotate", index: 7, rotation: undefined });
-  assert.deepEqual(state.rotations, { 0: "R90" });
+  state = graphWorkspaceReducer(state, { type: "select", index: 7 });
+  assert.equal(inspectedGraphNode(state), graph.nodes[1]);
   state = graphWorkspaceReducer(state, { type: "select", index: null });
   assert.equal(inspectedGraphNode(state), null);
-  assert.equal(state.rotations[0], "R90");
   assert.equal(graph.nodes[0].rotation, "R90");
+  assert.deepEqual([graph.nodes[0].x, graph.nodes[0].y], [0, 0]);
+  assert.deepEqual([graph.nodes[1].x, graph.nodes[1].y], [168, 336]);
 });
 
-test("loading a different graph clears stale selections and overrides", () => {
+test("loading a different graph clears stale selections and hover", () => {
   let state = graphWorkspaceReducer(loaded(), { type: "select", index: 7 });
-  state = graphWorkspaceReducer(state, { type: "rotate", index: 7, rotation: "R180" });
   state = graphWorkspaceReducer(state, { type: "hover", index: 0 });
   state = graphWorkspaceReducer(state, { type: "load", graph: { ...graph, logicalPath: "next.tgr" } });
   assert.equal(inspectedGraphNode(state), null);
-  assert.deepEqual(state.rotations, {});
-  assert.equal(state.direction, "counterclockwise");
+  assert.equal(state.selectedNodeIndex, null);
+  assert.equal(state.hoveredNodeIndex, null);
 });
 
-test("unknown node IDs cannot create selections or rotation overrides", () => {
+test("unknown node IDs cannot create selections or hover", () => {
   const state = loaded();
   assert.equal(graphWorkspaceReducer(state, { type: "select", index: 99 }), state);
   assert.equal(graphWorkspaceReducer(state, { type: "hover", index: 99 }), state);
-  assert.equal(graphWorkspaceReducer(state, { type: "rotate", index: 99, rotation: "R90" }), state);
+});
+
+test("clearing an unavailable graph removes its metadata and selections", () => {
+  const selected = graphWorkspaceReducer(loaded(), { type: "select", index: 7 });
+  assert.deepEqual(graphWorkspaceReducer(selected, { type: "clear" }), initialGraphWorkspaceState());
 });
