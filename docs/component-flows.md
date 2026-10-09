@@ -277,7 +277,10 @@ southward variant in the reference maps. `graphProjection.ts` supplies the same
 linear transform to nodes, the grid matrix, and test-orientation markers.
 This is a display correction; stored coordinates and source rotation constraints
 are unchanged. Indoor and unknown previews retain the previous projection until
-their coordinate conventions are validated. The grid moves and zooms with the
+their coordinate conventions are validated. The broader Act 1-5 reference audit
+finds that this environment-based choice is not globally supported; see
+`docs/acts-1-5-layout-projection-audit.md`. It remains unchanged pending a
+separate production correction. The grid moves and zooms with the
 graph. This is a visual ruler over authored graph coordinates, not decoded
 terrain cells: node positions are not assumed to be exact multiples of 24,
 snapped, or replaced with fabricated grid nodes. Indoor and unknown layouts
@@ -309,6 +312,27 @@ in both the node tooltip and details, alongside connection, transition, and
 boss evidence. Changing layouts or zones clears transient graph state, and
 cancelled graph fetches cannot publish stale selections. Store tests cover
 hover fallback, independent overrides, invalid node IDs, and graph resets.
+
+## Reference Comparison Flow
+
+```text
+scripts/audit-layout-references.py
+  -> Definitiv Guide category-linked Act 1-5 zone pages (HTML only)
+  -> local campaign manifest -> zone/topology graph candidate match
+  -> Rust GET /api/layout-graph -> parsed source graphs
+  -> docs/acts-1-5-reference-review.json -> manual, patch-scoped observations
+  -> ignored .poe-layouts/research/acts-1-5-reference-audit inventory and HTML
+  -> local comparison gallery with remote reference images and both projections
+```
+
+This is a research helper, not scrape/pipeline ownership moving out of Rust.
+It consumes Rust graph JSON and records source coverage; it does not parse DGRs,
+assemble terrain or compute image matches. It visits actual category links,
+reports fetch failures and absent guide pages, and never downloads image pixels.
+The checked-in review distinguishes directional support, incompatible current
+projection, incomplete composition, ambiguous evidence and missing references.
+`--inventory` regenerates the gallery offline from its saved inventory. A patch
+mismatch is surfaced; an unreviewed page never inherits another page's verdict.
 
 ## Layout Environment Flow
 
