@@ -82,8 +82,14 @@ graphs is not proven by these comparisons either.
 
 ## Missing Composition
 
+The findings below describe the top-level picker at audit time. The subsequent
+reachable-candidate picker resolves cached child graphs into grouped layout
+choices (including Upper Prison and Ancient Pyramid), but does not assemble
+their parent transforms, floor transitions or terrain geometry. The comparison
+gallery and per-zone review remain the original top-level audit snapshot.
+
 Upper Prison, Fellshrine, Ancient Pyramid, Lunaris 1 and both Sceptre zones
-currently expose wrapper graphs. For example:
+exposed wrapper graphs in that snapshot. For example:
 
 - Upper Prison's `prisonmain_1_1.dgr` has two unconnected `graph` nodes referencing
   `Prison` and `Warden`. Its `filegroups.fgp` resolves those to nine prison

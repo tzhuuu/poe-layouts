@@ -39,6 +39,7 @@ import { adjacentLayout, layoutKeyStep, type LayoutKeyRepeat } from "../data/lay
 import { graphOrientationDegrees, graphProjection, projectGraphPoint } from "../data/graphProjection";
 import { nodeCanvas, nodeRotationDegrees, rotateNodePoint, type NodeRotation, type RotationDirection } from "../data/nodeRotation";
 import { loadLayoutEnvironments, type LayoutEnvironment } from "../data/layoutEnvironment";
+import { groupLayoutCandidates, loadLayoutCandidates, selectLayoutCandidate, type LayoutCandidate, type LayoutCandidates } from "../data/layoutCandidates";
 import {
   loadLayoutGraph,
   nodeLabelLines,
@@ -284,7 +285,7 @@ function ExplorerPane({
                   {zone.isTown && <span className="shrink-0 text-muted-foreground" title="Town"><Home aria-hidden="true" className="size-3.5" /></span>}
                 </strong>
                 <small className="block truncate text-xs text-muted-foreground">
-                  {zone.id} ({layoutCountLabel(layoutCountsByZoneId.get(zone.id) ?? 0)})
+                  {zone.id} ({layoutCountsByZoneId.get(zone.id) ?? 0} {(layoutCountsByZoneId.get(zone.id) ?? 0) === 1 ? "topology" : "topologies"})
                 </small>
               </span>
               <Badge variant="secondary">Act {zone.act}</Badge>
@@ -337,12 +338,33 @@ function WorkspaceTabs({
       ),
     [selectedTerrain],
   );
-  const selectedLayoutPath = graphCandidates.find((file) => file.logicalPath === navigation.layout)?.logicalPath
-    ?? graphCandidates[0]?.logicalPath ?? null;
+  const rootPaths = useMemo(() => [...new Set(graphCandidates.map((file) => file.logicalPath))], [graphCandidates]);
+  const [resolvedLayouts, setResolvedLayouts] = useState<
+    { status: "loading" } | { status: "ready"; data: LayoutCandidates } | { status: "error"; message: string }
+  >({ status: "loading" });
+  useEffect(() => {
+    const controller = new AbortController();
+    setResolvedLayouts({ status: "loading" });
+    loadLayoutCandidates(rootPaths, controller.signal)
+      .then((data) => { if (!controller.signal.aborted) setResolvedLayouts({ status: "ready", data }); })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setResolvedLayouts({ status: "error", message: error instanceof Error ? error.message : String(error) });
+      });
+    return () => controller.abort();
+  }, [rootPaths]);
+  const layoutCandidates = useMemo<LayoutCandidate[]>(() => resolvedLayouts.status === "ready"
+    ? groupLayoutCandidates(resolvedLayouts.data.candidates).flatMap((group) => group.candidates)
+    : resolvedLayouts.status === "error"
+      ? rootPaths.map((logicalPath) => ({ logicalPath, group: [], rootPaths: [logicalPath] }))
+      : [], [resolvedLayouts, rootPaths]);
+  const layoutWarnings = resolvedLayouts.status === "ready" ? resolvedLayouts.data.warnings
+    : resolvedLayouts.status === "error" ? [resolvedLayouts.message] : [];
+  const selectedCandidate = selectLayoutCandidate(layoutCandidates, navigation.layout);
+  const selectedLayoutPath = selectedCandidate?.logicalPath ?? null;
   const setSelectedLayoutPath = (layout: string) => navigate({ layout });
   const roomLayoutPaths = useMemo(
-    () => [...new Set(graphCandidates.map((file) => file.logicalPath))],
-    [graphCandidates],
+    () => layoutCandidates.map((candidate) => candidate.logicalPath),
+    [layoutCandidates],
   );
   const previousLayoutPath = adjacentLayout(roomLayoutPaths, selectedLayoutPath, -1);
   const nextLayoutPath = adjacentLayout(roomLayoutPaths, selectedLayoutPath, 1);
@@ -372,10 +394,10 @@ function WorkspaceTabs({
   }, [selectedLayoutPath]);
   const roomWorkspace = useRoomWorkspace(roomLayoutPaths, selectedLayoutPath);
   useEffect(() => {
-    if (navigation.zone === selectedZone?.id && navigation.layout !== selectedLayoutPath) {
+    if (resolvedLayouts.status !== "loading" && navigation.zone === selectedZone?.id && navigation.layout !== selectedLayoutPath) {
       navigate({ layout: selectedLayoutPath }, "replace");
     }
-  }, [navigation.zone, navigation.layout, selectedZone?.id, selectedLayoutPath, navigate]);
+  }, [resolvedLayouts.status, navigation.zone, navigation.layout, selectedZone?.id, selectedLayoutPath, navigate]);
 
   return (
     <Tabs
@@ -387,18 +409,22 @@ function WorkspaceTabs({
         selectedTerrain={selectedTerrain}
         selectedZone={selectedZone}
         environments={environments}
-        fallbackLayoutPath={graphCandidates[0]?.logicalPath ?? null}
+        fallbackLayoutPath={selectedLayoutPath}
         picker={activeTab === "rooms" ? (
           <RoomPicker key={selectedZone?.id} workspace={roomWorkspace} />
         ) : (
-          <LayoutPicker
-            key={selectedZone?.id}
-            onSelectLayout={setSelectedLayoutPath}
-            previousLayoutPath={previousLayoutPath}
-            nextLayoutPath={nextLayoutPath}
-            selectedLayoutPath={selectedLayoutPath}
-            terrainFiles={selectedTerrain.filter((file) => file.kind === TerrainFileKind.Graph)}
-          />
+          <div className="flex min-w-0 items-center gap-2">
+            <LayoutPicker
+              key={selectedZone?.id}
+              onSelectLayout={setSelectedLayoutPath}
+              previousLayoutPath={previousLayoutPath}
+              nextLayoutPath={nextLayoutPath}
+              selectedLayoutPath={selectedLayoutPath}
+              candidates={layoutCandidates}
+              loading={resolvedLayouts.status === "loading"}
+            />
+            <WarningBadge label="Layout resolution warnings" warnings={layoutWarnings}>{layoutWarnings.length} layout warnings</WarningBadge>
+          </div>
         )}
       />
 
@@ -433,14 +459,14 @@ function WorkspaceTabs({
               }
             }}
           >
-            <LayoutGraphPreview
+            {resolvedLayouts.status === "loading" ? <div className="flex h-full items-center justify-center text-sm text-white/70" role="status">Loading layouts</div> : <LayoutGraphPreview
               logicalPath={selectedLayoutPath}
               outdoor={environments.status === "ready" && environments.byPath.get(selectedLayoutPath ?? "")?.environment === "outdoor"}
               zoneId={selectedZone?.id}
-            />
+            />}
           </section>
 
-          <ZoneInspector zone={selectedZone} />
+          <ZoneInspector zone={selectedZone} candidate={selectedCandidate} />
         </section>
         </GraphWorkspaceProvider>
 
@@ -1055,8 +1081,10 @@ function LayoutGraphSvg({ graph, outdoor }: { graph: LayoutGraph; outdoor: boole
 
 function ZoneInspector({
   zone,
+  candidate,
 }: {
   zone: ZoneSummary | null;
+  candidate: LayoutCandidate | null;
 }) {
   const { state } = useGraphWorkspace();
   const graph = state.graph;
@@ -1098,6 +1126,11 @@ function ZoneInspector({
             {graph ? (
               <>
                 <p className="break-all font-mono text-xs" title={graph.logicalPath}>{baseName(graph.logicalPath)}</p>
+                {candidate && candidate.group.length > 0 && <p className="text-xs font-medium">{candidate.group.join(" / ")}</p>}
+                {candidate && candidate.rootPaths.some((path) => path !== candidate.logicalPath) && <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">Source topologies</p>
+                  {candidate.rootPaths.map((path) => <p className="break-all font-mono text-[10px] text-muted-foreground" key={path}>{path}</p>)}
+                </div>}
                 <dl className="space-y-2 text-sm">
                   <DetailRow label="Format" value={`${graph.logicalPath.split(".").at(-1)?.toUpperCase() ?? "Graph"}${graph.version === null ? "" : ` v${graph.version}`}`} />
                   <div title="Declared Size header from the selected layout file; not confirmed final generated zone bounds.">
@@ -1167,18 +1200,22 @@ function EnvironmentBadge({ layout, unavailableReason }: {
 function LayoutPicker({
   onSelectLayout,
   selectedLayoutPath,
-  terrainFiles,
+  candidates,
+  loading,
   previousLayoutPath,
   nextLayoutPath,
 }: {
   onSelectLayout: (logicalPath: string) => void;
   selectedLayoutPath: string | null;
-  terrainFiles: TerrainFileSummary[];
+  candidates: LayoutCandidate[];
+  loading: boolean;
   previousLayoutPath: string | null;
   nextLayoutPath: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const groups = groupLayoutCandidates(candidates);
+  const selectedCandidate = candidates.find((candidate) => candidate.logicalPath === selectedLayoutPath);
 
   function cancelClose() {
     if (closeTimer.current !== null) clearTimeout(closeTimer.current);
@@ -1215,7 +1252,7 @@ function LayoutPicker({
         <Button
           aria-label="Choose layout"
           className="max-w-full gap-2 px-3"
-          disabled={terrainFiles.length === 0}
+          disabled={loading || candidates.length === 0}
           onClick={(event) => {
             if (open && event.detail > 0) event.preventDefault();
           }}
@@ -1225,8 +1262,8 @@ function LayoutPicker({
           variant="outline"
         >
           <GitBranch aria-hidden="true" />
-          <span>{layoutCountLabel(terrainFiles.length)}</span>
-          {selectedLayoutPath && <span className="hidden max-w-[200px] truncate font-mono text-xs text-muted-foreground xl:block">{baseName(selectedLayoutPath)}</span>}
+          <span>{loading ? "Loading layouts" : layoutCountLabel(candidates.length)}</span>
+          {selectedLayoutPath && <span className="hidden max-w-[200px] truncate font-mono text-xs text-muted-foreground xl:block">{selectedCandidate?.group.length ? `${selectedCandidate.group.join(" / ")}: ` : ""}{baseName(selectedLayoutPath)}</span>}
           <ChevronDown aria-hidden="true" className={open ? "rotate-180" : ""} />
         </Button>
       </PopoverTrigger>
@@ -1240,7 +1277,9 @@ function LayoutPicker({
       >
         <header className="border-b px-3 py-2 text-sm font-semibold">Possible layouts</header>
         <div className="max-h-[min(400px,60vh)] overflow-y-auto p-1">
-          {terrainFiles.map((file) => (
+          {groups.map((group) => <section aria-label={group.label || "Layouts"} key={group.label}>
+          {(group.label || groups.length > 1) && <h3 className="sticky top-0 z-10 border-b bg-popover px-2 py-2 text-xs font-semibold">{group.label || "Layouts"} <span className="font-normal text-muted-foreground">{group.candidates.length}</span></h3>}
+          {group.candidates.map((file) => (
             <button
               aria-current={file.logicalPath === selectedLayoutPath ? "true" : undefined}
               className={[
@@ -1250,31 +1289,26 @@ function LayoutPicker({
                   ? "bg-accent/80 shadow-[inset_3px_0_0_hsl(var(--primary))]"
                   : "",
               ].join(" ")}
-              disabled={file.status !== TerrainFileStatus.Extracted}
-              key={`${file.kind}:${file.logicalPath}:${file.source}`}
+              key={file.logicalPath}
               onClick={() => {
                 onSelectLayout(file.logicalPath);
                 cancelClose();
                 setOpen(false);
               }}
-              title={file.logicalPath}
+              title={[file.logicalPath, ...file.rootPaths.filter((path) => path !== file.logicalPath).map((path) => `Source: ${path}`)].join("\n")}
               type="button"
             >
               {file.logicalPath === selectedLayoutPath ? <CheckCircle2 aria-hidden="true" className="size-4 text-primary" /> : <span />}
               <span className="min-w-0">
                 <span className="block truncate font-mono text-xs font-medium">{baseName(file.logicalPath)}</span>
                 <span className="block truncate text-[10px] text-muted-foreground">{file.logicalPath}</span>
-                {file.reason && (
-                  <small className="block truncate text-xs text-muted-foreground">
-                    {file.reason}
-                  </small>
-                )}
               </span>
               <span className="justify-self-end">
-                <StatusBadge status={file.status} />
+                <StatusBadge status={TerrainFileStatus.Extracted} />
               </span>
             </button>
           ))}
+          </section>)}
         </div>
       </PopoverContent>
     </Popover>

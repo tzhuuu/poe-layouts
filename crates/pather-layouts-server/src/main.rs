@@ -147,6 +147,7 @@ fn route(request: &HttpRequest, config: &ServerConfig) -> HttpResponse {
         ("GET", "/zone_names") | ("GET", "/api/zone_names") => json_response(zone_names(config)),
         ("GET", "/data/layouts.bin") => file_response(&config.workspace.layout_db_path),
         ("GET", "/api/layout-graph") => json_response(layout_graph(config, request.query_params())),
+        ("POST", "/api/layout-candidates") => json_response(layout_candidates(config, request.json_body())),
         ("POST", "/api/layout-rooms") => json_response(layout_rooms(config, request.json_body())),
         ("GET", "/api/room-variants") => json_response(room_variants(config, request.query_params())),
         ("GET", "/api/room-plan") => json_response(room_plan(config, request.query_params())),
@@ -391,6 +392,24 @@ struct LayoutRoomsRequest {
     paths: Vec<String>,
 }
 
+fn layout_candidates(
+    config: &ServerConfig,
+    request: Result<LayoutRoomsRequest, WebError>,
+) -> Result<pather_core::LayoutCandidates, WebError> {
+    let paths = request?.paths;
+    if paths.len() > 512 {
+        return Err(WebError::BadRequest("too many layout roots".to_owned()));
+    }
+    for path in &paths {
+        raw_file_path(&config.workspace.campaign_files_dir(), path)?;
+        if path.starts_with(['/', '\\']) || path.contains(':') ||
+            !(path.to_ascii_lowercase().ends_with(".dgr") || path.to_ascii_lowercase().ends_with(".tgr")) {
+            return Err(WebError::BadRequest(format!("invalid layout root: {path}")));
+        }
+    }
+    Ok(pather_core::resolve_layout_candidates(&config.workspace.campaign_files_dir(), &paths))
+}
+
 fn room_variants(
     config: &ServerConfig,
     params: Vec<(String, String)>,
@@ -399,6 +418,34 @@ fn room_variants(
         .ok_or_else(|| WebError::BadRequest("missing layout path".to_owned()))?;
     let graph = read_layout_graph(config, &path)?;
     Ok(pather_core::inspect_layout_rooms(&config.workspace.campaign_files_dir(), &graph))
+}
+
+#[cfg(test)]
+mod layout_candidates_tests {
+    use super::*;
+
+    #[test]
+    fn serves_candidates_and_rejects_unsafe_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::from_root(dir.path());
+        fs::create_dir_all(workspace.campaign_files_dir()).unwrap();
+        let text = "version 19\nSize: 1 1\nNodes: 1\nEdges: 0\n\"\"\n\"\"\n\"\"\nDefault%: 0 0 0\n1 1 0 \"room\" I 0 100 0 N\n";
+        fs::write(workspace.campaign_files_dir().join("room.dgr"), text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>()).unwrap();
+        let config = ServerConfig { addr: DEFAULT_ADDR.to_owned(), static_root: dir.path().join("dist"), workspace };
+        for (paths, status) in [
+            (vec!["room.dgr"], 200), (vec![], 200),
+            (vec!["../room.dgr"], 400), (vec!["/room.dgr"], 400),
+            (vec!["room.arm"], 400), (vec!["room.dgr"; 513], 400),
+        ] {
+            let request = HttpRequest { method: "POST".to_owned(), path: "/api/layout-candidates".to_owned(), query: String::new(), body: serde_json::to_vec(&serde_json::json!({"paths": paths})).unwrap() };
+            let response = route(&request, &config);
+            assert_eq!(response.status, status);
+            assert_eq!(response.content_type, "application/json");
+            let value: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+            if status == 200 { assert!(value["candidates"].is_array()); }
+            else { assert!(value["error"].is_string()); }
+        }
+    }
 }
 
 fn room_plan(

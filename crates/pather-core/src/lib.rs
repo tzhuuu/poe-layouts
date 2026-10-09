@@ -17,12 +17,14 @@ use poe_dat::{
 };
 use serde::{Deserialize, Serialize};
 
+mod layout_candidates;
 mod layout_environment;
 mod layout_transitions;
 mod room_catalog;
 mod room_plan;
 pub use room_plan::{parse_arm_room_plan, RoomMarker, RoomObject, RoomPlan, RoomTile};
 pub use room_catalog::{inspect_layout_rooms, resolve_room_bosses, LayoutNodeBosses, RoomCatalog, RoomVariant};
+pub use layout_candidates::{resolve_layout_candidates, LayoutCandidate, LayoutCandidates};
 pub use layout_environment::{
     refresh_layout_environments, scrape_layout_environments, LayoutEnvironment,
     LayoutEnvironmentIndex, LayoutEnvironmentSummary,

@@ -63,6 +63,35 @@ pather-cli
   `pather-layouts-server`; `pather-core` owns the text/UTF-16 DGR parser and the
   server only handles local file routing.
 
+## Reachable Layout Candidates
+
+```text
+zone's extracted topology graph paths
+  -> POST /api/layout-candidates
+  -> pather-core::resolve_layout_candidates
+     -> graph nodes labeled "graph"
+     -> direct DGR/TGR paths, or master TSI FileGroups aliases
+     -> recursively reachable display graphs, source roots, group labels, warnings
+  -> existing Layouts picker, arrow navigation and layout URL
+  -> graph canvas and Rooms catalog use the selected resolved graph
+```
+
+Pure wrappers with no edges are replaced only when all children resolve.
+Mixed graphs retain their own main layout alongside child candidates; disconnected
+mixed parents appear as an Overview after their resolved sections. Missing,
+unsafe or cyclic references produce warnings; unresolved wrappers remain
+available. Discovery never lists arbitrary nearby cached graphs. Shared child
+paths are deduplicated while retaining their top-level source roots. Recursion
+is bounded, and file-group paths resolve relative to the declared FGP file.
+
+The picker groups child variants by source alias (for example Prison/Warden or
+Level1/Level2), without a separate subgraph control. Existing wrapper URLs map
+to their first reachable candidate; explicit child URLs survive loading and
+reload. API failure falls back to original topology choices with a warning.
+These are individual section graph choices, not asserted whole-zone
+combinations. Parent placement transforms, runtime variant selection and
+teleport-connected composition are not simulated.
+
 ## `poe-content` Source Layout
 
 ```text
